@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chizu</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #e4e4e0;
+    --card: #ffffff; --accent: #3b5bdb; --mark: #ffe066; --mark-fg: #1d1d1b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615; --fg: #e8e8e3; --muted: #9a9a93; --line: #2c2c2a;
+      --card: #1e1e1d; --accent: #8ea4ff; --mark: #6b5800; --mark-fg: #fff6cc;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .02em; }
+  header .info { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  form { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .filters { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
+  input[type=text], select { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+  .filters input[type=text], .filters select { padding: 4px 8px; }
+  #q { font-size: 17px; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #status { color: var(--muted); font-size: 13px; margin: 14px 0 8px; min-height: 1.5em; }
+  .result { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; }
+  .result .path { color: var(--accent); cursor: pointer; font-family: ui-monospace, monospace; font-size: 14px; overflow-wrap: anywhere; background: none; border: 0; padding: 0; text-align: left; }
+  .result .root { color: var(--muted); font-size: 12px; }
+  .lines { margin: 6px 0 0; font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .lines .n { color: var(--muted); display: inline-block; min-width: 3.5em; text-align: right; padding-right: .8em; user-select: none; }
+  .more { color: var(--muted); font-size: 12px; }
+  mark { background: var(--mark); color: var(--mark-fg); border-radius: 2px; }
+  dialog { width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog .bar { position: sticky; top: 0; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; font-size: 13px; }
+  dialog pre { margin: 0; padding: 12px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  details { margin-top: 24px; color: var(--muted); font-size: 13px; }
+  details li { overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>chizu</h1>
+    <span class="info" id="info"></span>
+  </header>
+
+  <form id="form">
+    <input type="text" id="q" placeholder="Search…" autofocus autocomplete="off">
+    <button class="primary" type="submit">Search</button>
+    <div class="filters">
+      <label>dir <input type="text" id="dir" size="24" placeholder="any"></label>
+      <label>path <input type="text" id="path" size="12" placeholder="prefix"></label>
+      <label>ext <input type="text" id="ext" size="8" placeholder="md,txt"></label>
+      <label><input type="checkbox" id="raw"> FTS5 syntax</label>
+      <button type="button" id="reindex" hidden>Re-index</button>
+    </div>
+  </form>
+
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <details>
+    <summary>Indexed directories</summary>
+    <ul id="roots"></ul>
+  </details>
+</main>
+
+<dialog id="viewer">
+  <div class="bar"><span id="viewer-path"></span><button type="button" id="viewer-close">Close</button></div>
+  <pre id="viewer-body"></pre>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, props = {}, ...children) => {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...children);
+  return e;
+};
+
+function segments(segs) {
+  return (segs || []).map(s => s.match ? el("mark", { textContent: s.text }) : document.createTextNode(s.text));
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+async function runSearch() {
+  const q = $("q").value.trim();
+  if (!q) return;
+
+  const params = new URLSearchParams({ q, lines: "5", limit: "50" });
+  for (const k of ["dir", "path", "ext"]) if ($(k).value.trim()) params.set(k, $(k).value.trim());
+  if ($("raw").checked) params.set("raw", "true");
+  history.replaceState(null, "", "?" + params);
+
+  $("status").textContent = "Searching…";
+  try {
+    const { results } = await api("/api/search?" + params);
+    $("status").textContent = results.length ? `${results.length} file${results.length === 1 ? "" : "s"}` : "No results";
+    $("results").replaceChildren(...results.map(renderResult));
+  } catch (err) {
+    $("status").textContent = err.message;
+    $("results").replaceChildren();
+  }
+}
+
+function renderResult(r) {
+  const lines = el("div", { className: "lines" });
+  for (const l of r.lines || []) {
+    lines.append(el("div", {}, el("span", { className: "n", textContent: l.line }), ...segments(l.segments)));
+  }
+  if (!r.lines || !r.lines.length) lines.append(...segments(r.snippet));
+
+  const card = el("div", { className: "result" },
+    el("button", { className: "path", type: "button", textContent: r.path, onclick: () => openFile(r) }),
+    " ", el("span", { className: "root", textContent: r.root }),
+    lines);
+
+  const more = r.line_count - (r.lines || []).length;
+  if (more > 0) card.append(el("div", { className: "more", textContent: `… ${more} more matching lines` }));
+  return card;
+}
+
+async function openFile(r) {
+  $("viewer-path").textContent = r.abs_path;
+  $("viewer-body").textContent = "Loading…";
+  $("viewer").showModal();
+  try {
+    const f = await api("/api/file?id=" + r.file_id);
+    $("viewer-body").textContent = f.content;
+  } catch (err) {
+    $("viewer-body").textContent = err.message;
+  }
+}
+
+async function loadRoots() {
+  try {
+    const { roots } = await api("/api/roots");
+    $("roots").replaceChildren(...roots.map(r => el("li", { textContent: `${r.path} (${r.file_count} files)` })));
+  } catch (err) {
+    $("roots").replaceChildren(el("li", { textContent: err.message }));
+  }
+}
+
+async function loadInfo() {
+  try {
+    const info = await api("/api/info");
+    $("info").textContent = `${info.db} · ${info.tokenizer}`;
+    $("reindex").hidden = info.read_only;
+  } catch (err) {
+    $("info").textContent = err.message;
+  }
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); runSearch(); });
+$("viewer-close").addEventListener("click", () => $("viewer").close());
+$("reindex").addEventListener("click", async () => {
+  $("status").textContent = "Re-indexing…";
+  try {
+    const { stats, errors } = await api("/api/index", { method: "POST", body: "{}" });
+    const sum = (k) => stats.reduce((n, s) => n + s[k], 0);
+    $("status").textContent = `Re-indexed: ${sum("added")} added, ${sum("updated")} updated, ${sum("removed")} removed` +
+      (errors.length ? ` · ${errors.join("; ")}` : "");
+    loadRoots();
+  } catch (err) {
+    $("status").textContent = err.message;
+  }
+});
+
+const initial = new URLSearchParams(location.search);
+for (const k of ["q", "dir", "path", "ext"]) if (initial.get(k)) $(k).value = initial.get(k);
+$("raw").checked = initial.get("raw") === "true";
+
+loadInfo();
+loadRoots();
+if ($("q").value) runSearch();
+</script>
+</body>
+</html>
