@@ -53,6 +53,7 @@ func indexCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "exclude", Aliases: []string{"x"}, Usage: "skip paths matching these gitignore-style `PATTERN`s"},
 			&cli.Int64Flag{Name: "max-size", Usage: "skip files larger than `BYTES` (default 10MiB)"},
 			&cli.BoolFlag{Name: "clear-filters", Usage: "forget the filters saved from earlier runs"},
+			&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "no progress output"},
 			jsonFlag(),
 		},
 		Action: runIndex,
@@ -61,7 +62,12 @@ func indexCommand() *cli.Command {
 
 func runIndex(ctx context.Context, cmd *cli.Command) error {
 
-	log := logger(cmd)
+	w, errW := cmd.Root().Writer, cmd.Root().ErrWriter
+
+	// Show a status line while indexing when stderr is a terminal. Logs go
+	// through it so a warning clears the line instead of being glued onto it.
+	status := newStatusLine(errW)
+	log := loggerTo(cmd, status.writer(errW))
 
 	db, dbFile, err := openDB(ctx, cmd, false, cmd.String("tokenizer"))
 	if err != nil {
@@ -78,13 +84,13 @@ func runIndex(ctx context.Context, cmd *cli.Command) error {
 		SkipPaths:    []string{dbFile, dbFile + "-wal", dbFile + "-shm", dbFile + "-journal"},
 		Log:          log,
 	}
+	if isTerminal(errW) && !cmd.Bool("quiet") {
+		opts.Progress = status.update
+	}
 
 	dirs := append(cmd.StringSlice("input"), cmd.Args().Slice()...)
 
-	var all []indexer.Stats
-	var errs []error
-	start := time.Now()
-
+	// No dirs: re-index every root already in the database.
 	if len(dirs) == 0 {
 		roots, err := db.ListRoots(ctx)
 		if err != nil {
@@ -93,37 +99,50 @@ func runIndex(ctx context.Context, cmd *cli.Command) error {
 		if len(roots) == 0 {
 			return fmt.Errorf("nothing is indexed in %s yet (run: chizu index <dir>)", dbFile)
 		}
-		all, err = indexer.IndexAll(ctx, db, opts)
-		if err != nil {
-			errs = append(errs, err)
-		}
-	} else {
-		for _, dir := range dirs {
-			stats, err := indexer.Index(ctx, db, dir, opts)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
-				continue
-			}
-			all = append(all, stats)
+		for _, r := range roots {
+			dirs = append(dirs, r.Path)
 		}
 	}
 
-	w := cmd.Root().Writer
-	if cmd.Bool("json") {
-		if all == nil {
-			all = []indexer.Stats{}
+	all := []indexer.Stats{}
+	failed := 0
+
+	// Report each directory as it finishes, so it is always clear whether
+	// indexing completed or failed.
+	for _, dir := range dirs {
+		start := time.Now()
+		stats, err := indexer.Index(ctx, db, dir, opts)
+		status.clear()
+
+		if err != nil {
+			failed++
+			fmt.Fprintf(errW, "failed to index %s: %v\n", dir, err)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
 		}
+
+		all = append(all, stats)
+		if !cmd.Bool("json") {
+			fmt.Fprintf(w, "indexed %s in %s: %d added, %d updated, %d unchanged, %d removed, %d skipped\n",
+				stats.Root, time.Since(start).Round(time.Millisecond), stats.Added, stats.Updated, stats.Unchanged, stats.Removed, stats.Skipped)
+		}
+	}
+
+	if cmd.Bool("json") {
 		if err := writeJSON(w, all); err != nil {
 			return err
 		}
-	} else {
-		for _, s := range all {
-			fmt.Fprintf(w, "%s: %d added, %d updated, %d unchanged, %d removed, %d skipped\n",
-				s.Root, s.Added, s.Updated, s.Unchanged, s.Removed, s.Skipped)
-		}
 	}
 
-	log.Info().Dur("took", time.Since(start)).Str("db", dbFile).Msg("indexing done")
+	if failed > 0 {
+		noun := "directories"
+		if len(dirs) == 1 {
+			noun = "directory"
+		}
+		return fmt.Errorf("%d of %d %s failed", failed, len(dirs), noun)
+	}
 
-	return errors.Join(errs...)
+	return nil
 }

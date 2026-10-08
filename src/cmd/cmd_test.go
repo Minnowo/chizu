@@ -409,3 +409,20 @@ func (w *notifyWriter) String() string {
 	defer w.mu.Unlock()
 	return w.buf.String()
 }
+
+func TestIndexReportsEachDirectoryClearly(t *testing.T) {
+	dir := notesDir(t)
+	missing := filepath.Join(t.TempDir(), "missing")
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+
+	out, err := run(t, "index", "--db", db, dir, missing)
+	require.Error(t, err)
+	require.Contains(t, out.stdout, "indexed "+dir+" in ")
+	require.Contains(t, out.stdout, "4 added")
+	require.Contains(t, out.stderr, "failed to index "+missing+":")
+	require.Equal(t, "1 of 2 directories failed", err.Error())
+
+	// Re-indexing everything reports each root the same way.
+	out = mustRun(t, "index", "--db", db)
+	require.Contains(t, out.stdout, "indexed "+dir+" in ")
+}

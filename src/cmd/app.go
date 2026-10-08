@@ -78,6 +78,11 @@ func New(w, errW io.Writer) *cli.Command {
 
 // logger returns the logger configured by the root command's flags.
 func logger(cmd *cli.Command) zerolog.Logger {
+	return loggerTo(cmd, cmd.Root().ErrWriter)
+}
+
+// loggerTo is logger writing to w.
+func loggerTo(cmd *cli.Command, w io.Writer) zerolog.Logger {
 
 	level, err := zerolog.ParseLevel(cmd.String("log-level"))
 	if err != nil || level == zerolog.NoLevel {
@@ -87,7 +92,7 @@ func logger(cmd *cli.Command) zerolog.Logger {
 		level = zerolog.DebugLevel
 	}
 
-	return zerolog.New(zerolog.ConsoleWriter{Out: cmd.Root().ErrWriter, NoColor: !isTerminal(cmd.Root().ErrWriter)}).
+	return zerolog.New(zerolog.ConsoleWriter{Out: w, NoColor: !isTerminal(cmd.Root().ErrWriter)}).
 		Level(level).
 		With().Timestamp().Logger()
 }

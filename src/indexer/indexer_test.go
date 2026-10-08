@@ -387,3 +387,40 @@ func TestBinaryAfterSniffWindowIsSkipped(t *testing.T) {
 	require.Equal(t, []string{"exact.txt", "late-nul.txt"}, indexedPaths(t, db, stats.Root))
 	require.Equal(t, 1, stats.Skipped)
 }
+
+func TestProgressReported(t *testing.T) {
+	db := openDB(t)
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"a.md": "a", "b.md": "b", "c.md": "c", "d.bin": "\x00"})
+
+	for range 2 { // first index and re-index both report
+		var events []Progress
+		stats, err := Index(t.Context(), db, dir, Options{Progress: func(p Progress) { events = append(events, p) }})
+		require.NoError(t, err)
+		require.Len(t, events, 4, "one event per candidate file, skipped ones included")
+		for i, e := range events {
+			require.Equal(t, stats.Root, e.Root)
+			require.Equal(t, i+1, e.Files)
+			require.NotEmpty(t, e.Path)
+		}
+	}
+}
+
+func TestUnreadableIgnoreFileSkipsThatDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read any file")
+	}
+	db := openDB(t)
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{
+		"a.md":                "a",
+		"locked/.chizuignore": "x",
+		"locked/b.md":         "b",
+	})
+	require.NoError(t, os.Chmod(filepath.Join(dir, "locked", ".chizuignore"), 0))
+	t.Cleanup(func() { os.Chmod(filepath.Join(dir, "locked", ".chizuignore"), 0o644) })
+
+	stats, err := Index(t.Context(), db, dir, Options{})
+	require.NoError(t, err, "one unreadable ignore file must not abort the run")
+	require.Equal(t, []string{"a.md"}, indexedPaths(t, db, stats.Root), "its rules are unknown, so the directory is skipped")
+}

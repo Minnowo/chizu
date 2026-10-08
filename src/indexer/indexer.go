@@ -49,6 +49,8 @@ type Options struct {
 	MaxSize int64 `json:"max_size,omitempty"`
 	// ClearFilters ignores any saved filters (and saves the ones given, if any).
 	ClearFilters bool `json:"-"`
+	// Progress, if set, is called after each candidate file is processed.
+	Progress func(Progress) `json:"-"`
 	// SkipPaths are absolute file paths never indexed, such as the database itself.
 	SkipPaths []string       `json:"-"`
 	Log       zerolog.Logger `json:"-"`
@@ -90,6 +92,15 @@ func compileFilters(o Options) (filters, error) {
 	}
 
 	return f, nil
+}
+
+// Progress reports how far an index run has got.
+type Progress struct {
+	Root string
+	// Files is how many candidate files have been processed so far.
+	Files int
+	// Path is the file just processed, relative to Root.
+	Path string
 }
 
 type Stats struct {
@@ -187,6 +198,7 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 		}
 
 		seen := make(map[string]bool, len(existing))
+		files := 0
 
 		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 
@@ -215,7 +227,12 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 				if matcher.Ignored(rel, true) || (f.exclude != nil && f.exclude.Matches(rel, true)) {
 					return filepath.SkipDir
 				}
-				return matcher.LoadDir(root, rel)
+				if err := matcher.LoadDir(root, rel); err != nil {
+					// Its rules are unknown, so skipping is safer than indexing it.
+					opts.Log.Warn().Err(err).Str("dir", rel).Msg("cannot read ignore file, skipping directory")
+					return filepath.SkipDir
+				}
+				return nil
 			}
 
 			if !d.Type().IsRegular() || skip[path] {
@@ -230,6 +247,13 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 			ext := normalizeExt(filepath.Ext(rel))
 			if len(f.exts) > 0 && !f.exts[ext] {
 				return nil
+			}
+
+			if opts.Progress != nil {
+				defer func() {
+					files++
+					opts.Progress(Progress{Root: root, Files: files, Path: rel})
+				}()
 			}
 
 			info, err := d.Info()
