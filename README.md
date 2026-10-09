@@ -50,9 +50,12 @@ Indexing reads and hashes files on all CPUs (`--workers` / `-j` to change)
 and writes to SQLite from one goroutine in batches.
 
 `.chizuignore` files use gitignore syntax and may appear in any directory.
-If the indexed folder has no `.chizuignore`, these defaults apply:
-`.git/ .hg/ .svn/ node_modules/ .chizu.sqlite .chizu.sqlite-*`.
-`chizu init` writes them to a file; delete a line to index those files.
+If the indexed folder has no `.chizuignore`, built-in defaults apply: version
+control dirs (`.git/` ...), dependency dirs (`node_modules/`, `vendor/`,
+`.venv/` ...), build output (`build/`, `target/`, `out/`, `dist/`,
+`.gradle/`, `CMakeFiles/`, `cmake-build-*/` ...), caches and chizu's own
+database. `chizu init` writes the full list to a file; delete a line to
+index those files.
 
 ## Queries
 

@@ -21,14 +21,32 @@ import (
 // FileName is the name of the ignore file looked for in each directory.
 const FileName = ".chizuignore"
 
-// Defaults are the rules used when the root has no .chizuignore.
-var Defaults = []string{
-	".git/",
-	".hg/",
-	".svn/",
-	"node_modules/",
-	".chizu.sqlite",
-	".chizu.sqlite-*",
+// defaultGroups are the rules used when the root has no .chizuignore,
+// grouped by what produces them. Directory rules end in "/" so files with
+// the same name are still indexed.
+var defaultGroups = []struct {
+	name     string
+	patterns []string
+}{
+	{"version control", []string{".git/", ".hg/", ".svn/", ".bzr/", ".jj/"}},
+	{"chizu", []string{".chizu.sqlite", ".chizu.sqlite-*"}},
+	{"editors", []string{".idea/", ".cache/"}},
+	{"java, kotlin: gradle, maven, intellij", []string{".gradle/", ".kotlin/", "build/", "target/", "out/"}},
+	{"c, c++: cmake, bazel", []string{"CMakeFiles/", "CMakeCache.txt", "cmake-build-*/", "_deps/", "bazel-*/"}},
+	{"javascript", []string{"node_modules/", "bower_components/", "dist/", ".next/", ".nuxt/", ".svelte-kit/", ".parcel-cache/", ".turbo/"}},
+	{"python", []string{"__pycache__/", ".venv/", "venv/", "*.egg-info/", ".tox/", ".mypy_cache/", ".pytest_cache/", ".ruff_cache/"}},
+	{"go, php, ruby", []string{"vendor/"}},
+	{".net", []string{"obj/"}},
+	{"others: dart, zig, elixir, haskell, terraform", []string{".dart_tool/", "zig-out/", ".zig-cache/", "_build/", ".stack-work/", "dist-newstyle/", ".terraform/"}},
+}
+
+// Defaults returns the rules used when the root has no .chizuignore.
+func Defaults() []string {
+	var out []string
+	for _, g := range defaultGroups {
+		out = append(out, g.patterns...)
+	}
+	return out
 }
 
 type pattern struct {
@@ -208,7 +226,7 @@ func NewMatcher(root string) (*Matcher, error) {
 
 	f, err := os.Open(filepath.Join(root, FileName))
 	if errors.Is(err, fs.ErrNotExist) {
-		rules, err := Parse("", strings.NewReader(strings.Join(Defaults, "\n")))
+		rules, err := Parse("", strings.NewReader(strings.Join(Defaults(), "\n")))
 		if err != nil {
 			return nil, err
 		}
@@ -280,8 +298,14 @@ func DefaultFile() string {
 	sb.WriteString("# chizu ignore rules (gitignore syntax).\n")
 	sb.WriteString("# These are the built-in defaults; delete a line to index those files.\n")
 	sb.WriteString("# Subdirectories may have their own .chizuignore.\n\n")
-	for _, d := range Defaults {
-		sb.WriteString(d + "\n")
+	for i, g := range defaultGroups {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("# " + g.name + "\n")
+		for _, p := range g.patterns {
+			sb.WriteString(p + "\n")
+		}
 	}
 	return sb.String()
 }

@@ -110,6 +110,37 @@ func TestLoadDirUsesDefaultsWithoutIgnoreFile(t *testing.T) {
 	require.False(t, m.Ignored("notes.md", false))
 }
 
+func TestDefaultsIgnoreBuildOutputAndDependencies(t *testing.T) {
+	m, err := NewMatcher(t.TempDir())
+	require.NoError(t, err)
+
+	for _, dir := range []string{
+		".gradle", "build", "app/build", "target", "out", ".idea", // gradle, maven, intellij
+		"CMakeFiles", "cmake-build-debug", "_deps", // cmake
+		"node_modules", "web/.next", "dist", // js
+		"__pycache__", ".venv", "pkg.egg-info", ".pytest_cache", // python
+		"vendor", "obj", ".dart_tool", "zig-out", ".zig-cache", "_build", ".stack-work", ".terraform",
+	} {
+		require.True(t, m.Ignored(dir, true), dir)
+	}
+	require.True(t, m.Ignored("CMakeCache.txt", false))
+	require.True(t, m.Ignored("sub/CMakeCache.txt", false))
+
+	// Directory rules do not catch files with the same name, or real content.
+	require.False(t, m.Ignored("build", false))
+	require.False(t, m.Ignored("notes/target.md", false))
+	require.False(t, m.Ignored("src", true))
+	require.False(t, m.Ignored("CMakeLists.txt", false))
+	require.False(t, m.Ignored("build.gradle", false))
+	require.False(t, m.Ignored("pom.xml", false))
+}
+
+func TestDefaultFileMatchesDefaults(t *testing.T) {
+	rules, err := Parse("", strings.NewReader(DefaultFile()))
+	require.NoError(t, err)
+	require.Len(t, rules.patterns, len(Defaults()))
+}
+
 func TestIgnoreFileReplacesDefaults(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, FileName), []byte("*.tmp\n"), 0o644))
