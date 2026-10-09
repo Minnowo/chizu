@@ -94,8 +94,8 @@ func toolNames(t *testing.T, f *fixture) []string {
 }
 
 func TestTools(t *testing.T) {
-	require.ElementsMatch(t, []string{"search", "list_roots", "read_file", "index", "remove_root"}, toolNames(t, newFixture(t, false)))
-	require.ElementsMatch(t, []string{"search", "list_roots", "read_file"}, toolNames(t, newFixture(t, true)))
+	require.ElementsMatch(t, []string{"search", "list_roots", "list_files", "read_file", "index", "remove_root"}, toolNames(t, newFixture(t, false)))
+	require.ElementsMatch(t, []string{"search", "list_roots", "list_files", "read_file"}, toolNames(t, newFixture(t, true)))
 }
 
 func TestSearchTool(t *testing.T) {
@@ -218,4 +218,29 @@ func TestHTTPHandler(t *testing.T) {
 	data, _ := io.ReadAll(resp.Body)
 	require.Equal(t, http.StatusOK, resp.StatusCode, string(data))
 	require.Contains(t, string(data), `"name":"chizu"`)
+}
+
+func TestListFilesTool(t *testing.T) {
+	f := newFixture(t, true)
+
+	res := f.call(t, "list_files", nil)
+	require.False(t, res.IsError, text(t, res))
+	out := text(t, res)
+	require.Contains(t, out, filepath.Join(f.dir, "code", "main.go"))
+	require.Contains(t, out, filepath.Join(f.dir, "monday.md"))
+	require.Contains(t, out, "2 files")
+
+	res = f.call(t, "list_files", map[string]any{"exts": []string{"go"}})
+	out = text(t, res)
+	require.Contains(t, out, "main.go")
+	require.NotContains(t, out, "monday.md")
+
+	res = f.call(t, "list_files", map[string]any{"contains": "mon", "limit": 1})
+	require.Contains(t, text(t, res), "monday.md")
+
+	res = f.call(t, "list_files", map[string]any{"limit": 1})
+	require.Contains(t, text(t, res), "showing 1 of 2")
+
+	res = f.call(t, "list_files", map[string]any{"dir": "/not/indexed"})
+	require.True(t, res.IsError)
 }

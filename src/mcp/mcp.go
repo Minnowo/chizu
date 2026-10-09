@@ -24,7 +24,10 @@ import (
 const instructions = `chizu is a full text index of local directories.
 Use search to find files by content (results include matching line numbers),
 then read_file to read a file or a range of its lines. list_roots shows which
-directories are indexed.`
+directories are indexed and list_files lists the files in them.`
+
+// defaultListLimit keeps list_files from flooding the model's context.
+const defaultListLimit = 200
 
 type Config struct {
 	DB *database.DB
@@ -68,6 +71,17 @@ Set raw=true for SQLite FTS5 syntax: AND, OR, NOT, NEAR(a b, 5), path:term.`),
 		gomcp.WithDescription("List the indexed directories."),
 		gomcp.WithReadOnlyHintAnnotation(true),
 	), h.listRoots)
+
+	s.AddTool(gomcp.NewTool("list_files",
+		gomcp.WithDescription("List indexed files by path, sorted by directory and path. Filter by name to find files without searching their content."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithString("contains", gomcp.Description("only files whose path contains this, ignoring case")),
+		gomcp.WithString("dir", gomcp.Description("only files inside this absolute directory")),
+		gomcp.WithString("path_prefix", gomcp.Description("only files whose path relative to its indexed root starts with this")),
+		gomcp.WithArray("exts", gomcp.WithStringItems(), gomcp.Description(`only these file extensions, e.g. ["md","txt"]`)),
+		gomcp.WithNumber("limit", gomcp.Description(fmt.Sprintf("max files (default %d)", defaultListLimit))),
+		gomcp.WithNumber("offset", gomcp.Description("skip this many files, for paging")),
+	), h.listFiles)
 
 	s.AddTool(gomcp.NewTool("read_file",
 		gomcp.WithDescription("Read an indexed file by absolute path or file_id, optionally only a range of lines."),
@@ -180,6 +194,41 @@ func (h *handlers) listRoots(ctx context.Context, req gomcp.CallToolRequest) (*g
 	}
 
 	return gomcp.NewToolResultStructured(map[string]any{"roots": roots}, sb.String()), nil
+}
+
+func (h *handlers) listFiles(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+
+	q := search.FileQuery{
+		Contains:   req.GetString("contains", ""),
+		Dir:        req.GetString("dir", ""),
+		PathPrefix: req.GetString("path_prefix", ""),
+		Exts:       req.GetStringSlice("exts", nil),
+		Limit:      req.GetInt("limit", defaultListLimit),
+		Offset:     req.GetInt("offset", 0),
+	}
+	if q.Limit <= 0 {
+		q.Limit = defaultListLimit
+	}
+
+	list, err := search.ListFiles(ctx, h.DB, q)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+
+	var sb strings.Builder
+	for _, f := range list.Files {
+		fmt.Fprintf(&sb, "%s (file_id %d, %d bytes)\n", f.AbsPath, f.FileID, f.Size)
+	}
+	switch {
+	case list.Total == 0:
+		sb.WriteString("No files.")
+	case len(list.Files) < list.Total:
+		fmt.Fprintf(&sb, "showing %d of %d files from offset %d\n", len(list.Files), list.Total, max(q.Offset, 0))
+	default:
+		fmt.Fprintf(&sb, "%d files\n", list.Total)
+	}
+
+	return gomcp.NewToolResultStructured(list, sb.String()), nil
 }
 
 func (h *handlers) readFile(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {

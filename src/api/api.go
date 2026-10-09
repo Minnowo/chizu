@@ -51,6 +51,7 @@ func New(cfg Config) chi.Router {
 		r.Get("/info", s.handleInfo)
 		r.Get("/search", s.handleSearch)
 		r.Get("/roots", s.handleRoots)
+		r.Get("/files", s.handleFiles)
 		r.Get("/file", s.handleFile)
 
 		r.Group(func(r chi.Router) {
@@ -190,6 +191,32 @@ func (s *server) handleRoots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"roots": roots})
+}
+
+func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
+
+	q := search.FileQuery{
+		Dir:        r.URL.Query().Get("dir"),
+		PathPrefix: r.URL.Query().Get("path"),
+		Contains:   r.URL.Query().Get("q"),
+		Exts:       listParam(r, "ext"),
+	}
+
+	var err error
+	for name, dst := range map[string]*int{"limit": &q.Limit, "offset": &q.Offset} {
+		if *dst, err = intParam(r, name); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+
+	list, err := search.ListFiles(r.Context(), s.DB, q)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {

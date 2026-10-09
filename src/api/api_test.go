@@ -238,3 +238,28 @@ func TestUI(t *testing.T) {
 	require.True(t, strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html"))
 	require.Contains(t, rec.Body.String(), "<title>chizu</title>")
 }
+
+func TestFiles(t *testing.T) {
+	s := newServer(t, false)
+
+	rec := s.do(t, "GET", "/api/files", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decode[search.FileList](t, rec)
+	require.Equal(t, 3, resp.Total)
+	require.Equal(t, []string{"code/main.go", "monday.md", "tuesday.md"},
+		[]string{resp.Files[0].Path, resp.Files[1].Path, resp.Files[2].Path})
+
+	resp = decode[search.FileList](t, s.do(t, "GET", "/api/files?ext=md&limit=1&offset=1", nil))
+	require.Equal(t, 2, resp.Total)
+	require.Len(t, resp.Files, 1)
+	require.Equal(t, "tuesday.md", resp.Files[0].Path)
+
+	resp = decode[search.FileList](t, s.do(t, "GET", "/api/files?q=MON", nil))
+	require.Equal(t, 1, resp.Total)
+
+	resp = decode[search.FileList](t, s.do(t, "GET", "/api/files?dir="+url.QueryEscape(filepath.Join(s.dir, "code")), nil))
+	require.Equal(t, 1, resp.Total)
+
+	require.Equal(t, http.StatusBadRequest, s.do(t, "GET", "/api/files?limit=x", nil).Code)
+	require.Equal(t, http.StatusNotFound, s.do(t, "GET", "/api/files?dir=/not/indexed", nil).Code)
+}

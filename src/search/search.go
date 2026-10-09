@@ -78,23 +78,16 @@ func Search(ctx context.Context, db *database.DB, q Query) ([]Result, error) {
 		q.MaxLines = DefaultMaxLines
 	}
 
+	filter, err := buildFilter(ctx, db, q.Dir, q.PathPrefix, "", q.Exts)
+	if err != nil {
+		return nil, err
+	}
+
 	params := database.SearchParams{
-		Match:      match,
-		PathPrefix: q.PathPrefix,
-		Limit:      q.Limit,
-		Offset:     max(q.Offset, 0),
-	}
-
-	for _, e := range q.Exts {
-		if e = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(e), ".")); e != "" {
-			params.Exts = append(params.Exts, e)
-		}
-	}
-
-	if q.Dir != "" {
-		if params.Scopes, err = scopesFor(ctx, db, q.Dir); err != nil {
-			return nil, err
-		}
+		Match:  match,
+		Filter: filter,
+		Limit:  q.Limit,
+		Offset: max(q.Offset, 0),
 	}
 
 	hits, err := db.SearchFiles(ctx, params)
@@ -126,6 +119,85 @@ func Search(ctx context.Context, db *database.DB, q Query) ([]Result, error) {
 	}
 
 	return results, nil
+}
+
+// buildFilter normalizes the filters shared by Search and ListFiles.
+func buildFilter(ctx context.Context, db *database.DB, dir, pathPrefix, contains string, exts []string) (database.Filter, error) {
+
+	f := database.Filter{PathPrefix: pathPrefix, Contains: contains}
+
+	for _, e := range exts {
+		if e = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(e), ".")); e != "" {
+			f.Exts = append(f.Exts, e)
+		}
+	}
+
+	if dir != "" {
+		var err error
+		if f.Scopes, err = scopesFor(ctx, db, dir); err != nil {
+			return f, err
+		}
+	}
+
+	return f, nil
+}
+
+type FileQuery struct {
+	// Dir limits the list to an indexed directory or any directory inside one.
+	Dir string `json:"dir,omitempty"`
+	// PathPrefix limits the list to files whose root-relative path starts with it.
+	PathPrefix string `json:"path_prefix,omitempty"`
+	// Contains limits the list to files whose root-relative path contains it, ignoring case.
+	Contains string   `json:"contains,omitempty"`
+	Exts     []string `json:"exts,omitempty"`
+	// Limit <= 0 lists every file.
+	Limit  int `json:"limit,omitempty"`
+	Offset int `json:"offset,omitempty"`
+}
+
+type FileEntry struct {
+	FileID  int64  `json:"file_id"`
+	Root    string `json:"root"`
+	Path    string `json:"path"`
+	AbsPath string `json:"abs_path"`
+	Ext     string `json:"ext"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"mtime"`
+}
+
+type FileList struct {
+	// Total is how many files match, ignoring Limit and Offset.
+	Total int         `json:"total"`
+	Files []FileEntry `json:"files"`
+}
+
+// ListFiles lists indexed files sorted by root and path.
+func ListFiles(ctx context.Context, db *database.DB, q FileQuery) (FileList, error) {
+
+	filter, err := buildFilter(ctx, db, q.Dir, q.PathPrefix, q.Contains, q.Exts)
+	if err != nil {
+		return FileList{}, err
+	}
+
+	infos, total, err := db.ListFiles(ctx, database.ListParams{Filter: filter, Limit: q.Limit, Offset: q.Offset})
+	if err != nil {
+		return FileList{}, err
+	}
+
+	list := FileList{Total: int(total), Files: make([]FileEntry, len(infos))}
+	for i, f := range infos {
+		list.Files[i] = FileEntry{
+			FileID:  f.ID,
+			Root:    f.RootPath,
+			Path:    f.Path,
+			AbsPath: filepath.Join(f.RootPath, filepath.FromSlash(f.Path)),
+			Ext:     f.Ext,
+			Size:    f.Size,
+			ModTime: f.ModTime,
+		}
+	}
+
+	return list, nil
 }
 
 // queryError marks FTS5 syntax problems as ErrBadQuery.

@@ -267,6 +267,36 @@ func TestRootsJSONAndRemove(t *testing.T) {
 	require.ErrorIs(t, err, database.ErrNotFound)
 }
 
+func TestFiles(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "files", "--db", db)
+	require.Equal(t, strings.Join([]string{
+		filepath.Join(dir, "code/main.go"),
+		filepath.Join(dir, "monday.md"),
+		filepath.Join(dir, "notes/todo.txt"),
+		filepath.Join(dir, "tuesday.md"),
+	}, "\n")+"\n", out.stdout)
+
+	out = mustRun(t, "files", "--db", db, "--ext", "md", "day")
+	require.Equal(t, filepath.Join(dir, "monday.md")+"\n"+filepath.Join(dir, "tuesday.md")+"\n", out.stdout)
+
+	out = mustRun(t, "files", "--db", db, "--dir", filepath.Join(dir, "notes"))
+	require.Equal(t, filepath.Join(dir, "notes/todo.txt")+"\n", out.stdout)
+
+	out = mustRun(t, "files", "--db", db, "--limit", "1", "--offset", "1", "--json")
+	var list search.FileList
+	require.NoError(t, json.Unmarshal([]byte(out.stdout), &list))
+	require.Equal(t, 4, list.Total)
+	require.Len(t, list.Files, 1)
+	require.Equal(t, "monday.md", list.Files[0].Path)
+
+	_, err := run(t, "files", "--db", db, "zebra")
+	require.ErrorIs(t, err, ErrNoResults)
+}
+
 func TestCat(t *testing.T) {
 	dir := notesDir(t)
 	db := filepath.Join(t.TempDir(), "x.sqlite")

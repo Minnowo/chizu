@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -117,7 +118,7 @@ func printResults(w io.Writer, results []search.Result, color bool) {
 			fmt.Fprintln(w)
 		}
 
-		fmt.Fprintln(w, paint(colorPath, displayPath(wd, r)))
+		fmt.Fprintln(w, paint(colorPath, displayPath(wd, r.Root, r.AbsPath)))
 
 		for _, l := range r.Lines {
 			var sb strings.Builder
@@ -139,13 +140,13 @@ func printResults(w io.Writer, results []search.Result, color bool) {
 
 // displayPath shows a result relative to the working directory when the
 // working directory is inside the result's root, and absolute otherwise.
-func displayPath(wd string, r search.Result) string {
-	if wd != "" && (wd == r.Root || strings.HasPrefix(wd, r.Root+string(filepath.Separator))) {
-		if rel, err := filepath.Rel(wd, r.AbsPath); err == nil {
+func displayPath(wd, root, abs string) string {
+	if wd != "" && (wd == root || strings.HasPrefix(wd, root+string(filepath.Separator))) {
+		if rel, err := filepath.Rel(wd, abs); err == nil {
 			return rel
 		}
 	}
-	return r.AbsPath
+	return abs
 }
 
 func rootsCommand() *cli.Command {
@@ -171,6 +172,65 @@ func rootsCommand() *cli.Command {
 			}
 			for _, r := range roots {
 				fmt.Fprintf(w, "%s\t%d files\tindexed %s\n", r.Path, r.FileCount, time.Unix(r.IndexedAt, 0).Format(time.DateTime))
+			}
+			return nil
+		},
+	}
+}
+
+func filesCommand() *cli.Command {
+	return &cli.Command{
+		Name:      "files",
+		Aliases:   []string{"ls"},
+		Usage:     "list indexed files, optionally only those whose path contains TEXT",
+		ArgsUsage: "[text]",
+		Flags: []cli.Flag{
+			dbFlag(),
+			&cli.StringFlag{Name: "dir", Usage: "only files inside `DIR`"},
+			&cli.StringFlag{Name: "path", Aliases: []string{"p"}, Usage: "only files whose path (relative to its indexed root) starts with `PREFIX`"},
+			&cli.StringSliceFlag{Name: "ext", Aliases: []string{"e"}, Usage: "only these extensions, e.g. --ext md,txt"},
+			&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Usage: "max files (default all)"},
+			&cli.IntFlag{Name: "offset", Usage: "skip this many files"},
+			jsonFlag(),
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+
+			db, _, err := openDB(ctx, cmd, true, "")
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			list, err := search.ListFiles(ctx, db, search.FileQuery{
+				Contains:   strings.Join(cmd.Args().Slice(), " "),
+				Dir:        cmd.String("dir"),
+				PathPrefix: cmd.String("path"),
+				Exts:       cmd.StringSlice("ext"),
+				Limit:      cmd.Int("limit"),
+				Offset:     cmd.Int("offset"),
+			})
+			if err != nil {
+				return err
+			}
+
+			w := cmd.Root().Writer
+			if cmd.Bool("json") {
+				if err := writeJSON(w, list); err != nil {
+					return err
+				}
+			} else {
+				wd, _ := os.Getwd()
+				bw := bufio.NewWriter(w)
+				for _, f := range list.Files {
+					fmt.Fprintln(bw, displayPath(wd, f.Root, f.AbsPath))
+				}
+				if err := bw.Flush(); err != nil {
+					return err
+				}
+			}
+
+			if list.Total == 0 {
+				return ErrNoResults
 			}
 			return nil
 		},

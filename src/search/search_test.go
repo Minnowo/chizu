@@ -256,3 +256,39 @@ func TestGetFile(t *testing.T) {
 	_, err = GetFile(ctx, f.db, "/elsewhere/x.md")
 	require.ErrorIs(t, err, database.ErrNotFound)
 }
+
+func TestListFiles(t *testing.T) {
+	f := newFixture(t, "")
+	ctx := t.Context()
+
+	list, err := ListFiles(ctx, f.db, FileQuery{})
+	require.NoError(t, err)
+	require.Equal(t, 5, list.Total)
+	require.Len(t, list.Files, 5)
+	require.Equal(t, "/code", list.Files[0].Root)
+	require.Equal(t, "docs/readme.md", list.Files[0].Path)
+	require.Equal(t, "/code/docs/readme.md", list.Files[0].AbsPath)
+	require.NotZero(t, list.Files[0].FileID)
+
+	list, err = ListFiles(ctx, f.db, FileQuery{Dir: "/notes/journal"})
+	require.NoError(t, err)
+	require.Equal(t, 2, list.Total)
+
+	list, err = ListFiles(ctx, f.db, FileQuery{Exts: []string{".TXT"}})
+	require.NoError(t, err)
+	require.Equal(t, 1, list.Total)
+	require.Equal(t, "recipes/bread.txt", list.Files[0].Path)
+
+	list, err = ListFiles(ctx, f.db, FileQuery{Contains: "day", Limit: 1})
+	require.NoError(t, err)
+	require.Equal(t, 2, list.Total)
+	require.Len(t, list.Files, 1)
+
+	list, err = ListFiles(ctx, f.db, FileQuery{PathPrefix: "nothing/"})
+	require.NoError(t, err)
+	require.Equal(t, 0, list.Total)
+	require.NotNil(t, list.Files)
+
+	_, err = ListFiles(ctx, f.db, FileQuery{Dir: "/elsewhere"})
+	require.ErrorIs(t, err, ErrNotIndexed)
+}

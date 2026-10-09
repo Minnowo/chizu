@@ -284,3 +284,46 @@ func TestFTSHashSizeIsRaised(t *testing.T) {
 	require.NoError(t, db.GetContext(t.Context(), &v, `SELECT v FROM files_fts_config WHERE k = 'hashsize'`))
 	require.Equal(t, 8<<20, v)
 }
+
+func TestListFiles(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	a, err := db.UpsertRoot(ctx, "/a")
+	require.NoError(t, err)
+	b, err := db.UpsertRoot(ctx, "/b")
+	require.NoError(t, err)
+	require.NoError(t, db.UpsertFiles(ctx, []File{
+		{RootID: a.ID, Path: "notes/z.md", Ext: "md", Size: 10, ModTime: 5, Content: "big content"},
+		{RootID: a.ID, Path: "notes/a.txt", Ext: "txt", Size: 3, Content: "x"},
+		{RootID: a.ID, Path: "100%_done.md", Ext: "md", Content: "x"},
+		{RootID: b.ID, Path: "Main.go", Ext: "go", Content: "x"},
+	}))
+
+	all, total, err := db.ListFiles(ctx, ListParams{})
+	require.NoError(t, err)
+	require.EqualValues(t, 4, total)
+	var got []string
+	for _, f := range all {
+		got = append(got, f.RootPath+"/"+f.Path)
+	}
+	require.Equal(t, []string{"/a/100%_done.md", "/a/notes/a.txt", "/a/notes/z.md", "/b/Main.go"}, got, "sorted by root then path")
+	require.Equal(t, FileInfo{ID: all[2].ID, RootPath: "/a", Path: "notes/z.md", Ext: "md", Size: 10, ModTime: 5}, all[2])
+
+	page, total, err := db.ListFiles(ctx, ListParams{Limit: 2, Offset: 1})
+	require.NoError(t, err)
+	require.EqualValues(t, 4, total, "total ignores paging")
+	require.Len(t, page, 2)
+	require.Equal(t, "notes/a.txt", page[0].Path)
+
+	count := func(p ListParams) int64 {
+		_, n, err := db.ListFiles(ctx, p)
+		require.NoError(t, err)
+		return n
+	}
+	require.EqualValues(t, 2, count(ListParams{Filter: Filter{Exts: []string{"md"}}}))
+	require.EqualValues(t, 2, count(ListParams{Filter: Filter{PathPrefix: "notes/"}}))
+	require.EqualValues(t, 1, count(ListParams{Filter: Filter{Scopes: []Scope{{RootID: b.ID}}}}))
+	require.EqualValues(t, 1, count(ListParams{Filter: Filter{Contains: "main"}}), "contains is case-insensitive")
+	require.EqualValues(t, 1, count(ListParams{Filter: Filter{Contains: "%_"}}), "wildcards are literal")
+	require.EqualValues(t, 0, count(ListParams{Filter: Filter{Contains: "nope"}}))
+}

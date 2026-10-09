@@ -32,6 +32,7 @@ The tokenizer is chosen when a database is created:
 | `index [dir...]` | index dirs; with no args, re-index every indexed dir |
 | `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--json`) |
 | `roots` | list indexed dirs |
+| `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
 | `cat <path\|id>` | print an indexed file |
 | `serve` | HTTP API, web UI and MCP (`--addr`, `--read-only`) |
@@ -69,6 +70,7 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 |---|---|
 | `GET /api/search?q=&raw=&dir=&path=&ext=&limit=&offset=&lines=` | `{"results": [...]}` |
 | `GET /api/roots` | `{"roots": [...]}` |
+| `GET /api/files?q=&dir=&path=&ext=&limit=&offset=` (`q` filters by path) | `{"total": n, "files": [...]}` |
 | `GET /api/file?path=` or `?id=` (`&raw=1` for text/plain) | file |
 | `GET /api/info` | db, tokenizer, driver, version |
 | `POST /api/index` `{"dirs": [], "exts": [], "include": [], "exclude": [], "max_size": 0, "clear_filters": false}` | stats |
@@ -77,7 +79,7 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 
 ## MCP
 
-Tools: `search`, `list_roots`, `read_file`, plus `index` and `remove_root`
+Tools: `search`, `list_roots`, `list_files`, `read_file`, plus `index` and `remove_root`
 unless `--read-only`. For Claude Code:
 
 ```sh

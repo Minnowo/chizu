@@ -40,8 +40,20 @@
   dialog::backdrop { background: rgba(0,0,0,.4); }
   dialog .bar { position: sticky; top: 0; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; font-size: 13px; }
   dialog pre { margin: 0; padding: 12px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-left: auto; }
+  .tabs button { border: 0; border-radius: 0; padding: 4px 12px; font-size: 13px; }
+  .tabs button[aria-pressed=true] { background: var(--accent); color: #fff; }
+  .files { background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  .file { display: flex; align-items: baseline; gap: 12px; padding: 5px 14px; border-top: 1px solid var(--line); }
+  .file:first-child { border-top: 0; }
+  .file .path { flex: 1; min-width: 0; color: var(--accent); cursor: pointer; font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; background: none; border: 0; padding: 0; text-align: left; }
+  .file .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .group { padding: 6px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); background: var(--bg); overflow-wrap: anywhere; }
+  .group:first-child { border-top: 0; border-radius: 8px 8px 0 0; }
+  #more { margin-top: 10px; }
   details { margin-top: 24px; color: var(--muted); font-size: 13px; }
   details li { overflow-wrap: anywhere; }
+  details li button { font-size: 13px; color: var(--accent); background: none; border: 0; padding: 0; text-align: left; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -49,22 +61,27 @@
   <header>
     <h1>chizu</h1>
     <span class="info" id="info"></span>
+    <span class="tabs">
+      <button type="button" data-view="search" aria-pressed="true">Search</button>
+      <button type="button" data-view="files" aria-pressed="false">Files</button>
+    </span>
   </header>
 
   <form id="form">
     <input type="text" id="q" placeholder="Search…" autofocus autocomplete="off">
-    <button class="primary" type="submit">Search</button>
+    <button class="primary" type="submit" id="go">Search</button>
     <div class="filters">
       <label>dir <input type="text" id="dir" size="24" placeholder="any"></label>
       <label>path <input type="text" id="path" size="12" placeholder="prefix"></label>
       <label>ext <input type="text" id="ext" size="8" placeholder="md,txt"></label>
-      <label><input type="checkbox" id="raw"> FTS5 syntax</label>
+      <label id="raw-label"><input type="checkbox" id="raw"> FTS5 syntax</label>
       <button type="button" id="reindex" hidden>Re-index</button>
     </div>
   </form>
 
   <div id="status"></div>
   <div id="results"></div>
+  <button type="button" id="more" hidden>Load more</button>
 
   <details>
     <summary>Indexed directories</summary>
@@ -96,21 +113,102 @@ async function api(path, opts) {
   return body;
 }
 
+const PAGE = 200;
+let view = "search";
+let seq = 0; // drops responses to requests that have been superseded
+
+function filterParams() {
+  const params = new URLSearchParams();
+  for (const k of ["dir", "path", "ext"]) if ($(k).value.trim()) params.set(k, $(k).value.trim());
+  return params;
+}
+
+function setView(v) {
+  view = v;
+  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-pressed", b.dataset.view === v);
+  $("q").placeholder = v === "files" ? "Filter by path…" : "Search…";
+  $("go").textContent = v === "files" ? "List" : "Search";
+  $("raw-label").hidden = v === "files";
+  $("results").replaceChildren();
+  $("more").hidden = true;
+  $("status").textContent = "";
+  run();
+}
+
+function run() {
+  if (view === "files") listFiles(false); else runSearch();
+}
+
+async function listFiles(append) {
+  const id = ++seq;
+  const params = filterParams();
+  const q = $("q").value.trim();
+  if (q) params.set("q", q);
+  const offset = append ? $("results").querySelectorAll(".file").length : 0;
+
+  const state = new URLSearchParams(params);
+  state.set("view", "files");
+  history.replaceState(null, "", "?" + state);
+
+  params.set("limit", PAGE);
+  params.set("offset", offset);
+  if (!append) $("status").textContent = "Loading…";
+  try {
+    const { files, total } = await api("/api/files?" + params);
+    if (id !== seq) return;
+
+    let list = append && $("results").querySelector(".files");
+    if (!list) {
+      list = el("div", { className: "files" });
+      $("results").replaceChildren(list);
+    }
+    let lastRoot = list.dataset.root;
+    for (const f of files) {
+      if (f.root !== lastRoot) list.append(el("div", { className: "group", textContent: lastRoot = f.root }));
+      list.append(el("div", { className: "file" },
+        el("button", { className: "path", type: "button", textContent: f.path, onclick: () => openFile(f) }),
+        el("span", { className: "size", textContent: formatSize(f.size) })));
+    }
+    list.dataset.root = lastRoot || "";
+
+    const shown = offset + files.length;
+    $("status").textContent = total ? (shown < total ? `${shown} of ${total} files` : `${total} file${total === 1 ? "" : "s"}`) : "No files";
+    if (!total) $("results").replaceChildren();
+    $("more").hidden = shown >= total;
+  } catch (err) {
+    if (id !== seq) return;
+    $("status").textContent = err.message;
+    $("results").replaceChildren();
+    $("more").hidden = true;
+  }
+}
+
+function formatSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
 async function runSearch() {
   const q = $("q").value.trim();
   if (!q) return;
+  const id = ++seq;
 
-  const params = new URLSearchParams({ q, lines: "5", limit: "50" });
-  for (const k of ["dir", "path", "ext"]) if ($(k).value.trim()) params.set(k, $(k).value.trim());
+  const params = filterParams();
+  params.set("q", q);
+  params.set("lines", "5");
+  params.set("limit", "50");
   if ($("raw").checked) params.set("raw", "true");
   history.replaceState(null, "", "?" + params);
 
   $("status").textContent = "Searching…";
   try {
     const { results } = await api("/api/search?" + params);
+    if (id !== seq) return;
     $("status").textContent = results.length ? `${results.length} file${results.length === 1 ? "" : "s"}` : "No results";
     $("results").replaceChildren(...results.map(renderResult));
   } catch (err) {
+    if (id !== seq) return;
     $("status").textContent = err.message;
     $("results").replaceChildren();
   }
@@ -148,7 +246,9 @@ async function openFile(r) {
 async function loadRoots() {
   try {
     const { roots } = await api("/api/roots");
-    $("roots").replaceChildren(...roots.map(r => el("li", { textContent: `${r.path} (${r.file_count} files)` })));
+    $("roots").replaceChildren(...roots.map(r => el("li", {},
+      el("button", { type: "button", title: "List its files", textContent: r.path, onclick: () => { $("dir").value = r.path; $("q").value = ""; setView("files"); } }),
+      ` (${r.file_count} files)`)));
   } catch (err) {
     $("roots").replaceChildren(el("li", { textContent: err.message }));
   }
@@ -164,7 +264,17 @@ async function loadInfo() {
   }
 }
 
-$("form").addEventListener("submit", (e) => { e.preventDefault(); runSearch(); });
+$("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
+for (const b of document.querySelectorAll(".tabs button")) b.addEventListener("click", () => setView(b.dataset.view));
+$("more").addEventListener("click", () => listFiles(true));
+let typing;
+for (const id of ["q", "dir", "path", "ext"]) {
+  $(id).addEventListener("input", () => {
+    if (view !== "files") return;
+    clearTimeout(typing);
+    typing = setTimeout(() => listFiles(false), 200);
+  });
+}
 $("viewer-close").addEventListener("click", () => $("viewer").close());
 $("reindex").addEventListener("click", async () => {
   $("status").textContent = "Re-indexing…";
@@ -174,6 +284,7 @@ $("reindex").addEventListener("click", async () => {
     $("status").textContent = `Re-indexed: ${sum("added")} added, ${sum("updated")} updated, ${sum("removed")} removed` +
       (errors.length ? ` · ${errors.join("; ")}` : "");
     loadRoots();
+    if (view === "files") listFiles(false);
   } catch (err) {
     $("status").textContent = err.message;
   }
@@ -185,7 +296,8 @@ $("raw").checked = initial.get("raw") === "true";
 
 loadInfo();
 loadRoots();
-if ($("q").value) runSearch();
+if (initial.get("view") === "files") setView("files");
+else if ($("q").value) runSearch();
 </script>
 </body>
 </html>
