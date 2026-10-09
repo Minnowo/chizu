@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -206,4 +207,80 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 		return err
 	}))
 	require.Equal(t, 1, matchCount(t, db, "alpha"))
+}
+
+func TestUpsertFilesBatch(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	root, err := db.UpsertRoot(ctx, "/r")
+	require.NoError(t, err)
+
+	require.NoError(t, db.UpsertFiles(ctx, nil))
+
+	require.NoError(t, db.UpsertFiles(ctx, []File{
+		{RootID: root.ID, Path: "a.md", Ext: "md", Size: 1, ModTime: 1, Hash: "ha", Content: "alpha"},
+		{RootID: root.ID, Path: "b.md", Ext: "md", Size: 2, ModTime: 2, Hash: "hb", Content: "beta"},
+	}))
+	require.Equal(t, 1, matchCount(t, db, "alpha"))
+	require.Equal(t, 1, matchCount(t, db, "beta"))
+
+	// A batch mixing an update and an insert.
+	require.NoError(t, db.UpsertFiles(ctx, []File{
+		{RootID: root.ID, Path: "a.md", Ext: "md", Size: 3, ModTime: 3, Hash: "ha2", Content: "gamma"},
+		{RootID: root.ID, Path: "c.md", Ext: "md", Content: "delta"},
+	}))
+	require.Equal(t, 0, matchCount(t, db, "alpha"))
+	require.Equal(t, 1, matchCount(t, db, "gamma"))
+	require.Equal(t, 1, matchCount(t, db, "delta"))
+
+	states, err := db.FileStates(ctx, root.ID)
+	require.NoError(t, err)
+	require.Len(t, states, 3)
+	require.Equal(t, "ha2", states["a.md"].Hash)
+	require.EqualValues(t, 3, states["a.md"].ModTime)
+}
+
+func TestUpsertFilesLargeBatchIsChunked(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	root, err := db.UpsertRoot(ctx, "/r")
+	require.NoError(t, err)
+
+	files := make([]File, 5000) // more rows than fit in one statement's variables
+	for i := range files {
+		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d.txt", i), Content: "common"}
+	}
+	require.NoError(t, db.UpsertFiles(ctx, files))
+	require.Equal(t, 5000, matchCount(t, db, "common"))
+}
+
+func TestDeleteFiles(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	root, err := db.UpsertRoot(ctx, "/r")
+	require.NoError(t, err)
+
+	files := make([]File, 2000)
+	for i := range files {
+		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d", i), Content: "word"}
+	}
+	require.NoError(t, db.UpsertFiles(ctx, files))
+
+	states, err := db.FileStates(ctx, root.ID)
+	require.NoError(t, err)
+	var ids []int64
+	for _, st := range states {
+		ids = append(ids, st.ID)
+	}
+
+	require.NoError(t, db.DeleteFiles(ctx, nil))
+	require.NoError(t, db.DeleteFiles(ctx, ids[:1500]))
+	require.Equal(t, 500, matchCount(t, db, "word"))
+}
+
+func TestFTSHashSizeIsRaised(t *testing.T) {
+	db := openTestDB(t, Options{})
+	var v int
+	require.NoError(t, db.GetContext(t.Context(), &v, `SELECT v FROM files_fts_config WHERE k = 'hashsize'`))
+	require.Equal(t, 8<<20, v)
 }

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -49,11 +50,20 @@ type Options struct {
 	MaxSize int64 `json:"max_size,omitempty"`
 	// ClearFilters ignores any saved filters (and saves the ones given, if any).
 	ClearFilters bool `json:"-"`
+	// Workers is how many files are read and hashed in parallel (NumCPU if zero).
+	Workers int `json:"-"`
 	// Progress, if set, is called after each candidate file is processed.
 	Progress func(Progress) `json:"-"`
 	// SkipPaths are absolute file paths never indexed, such as the database itself.
 	SkipPaths []string       `json:"-"`
 	Log       zerolog.Logger `json:"-"`
+}
+
+func (o Options) workers() int {
+	if o.Workers > 0 {
+		return o.Workers
+	}
+	return runtime.NumCPU()
 }
 
 func (o Options) hasFilters() bool {
@@ -197,151 +207,281 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 			return err
 		}
 
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		// Pipeline: one walker finds candidate files, workers read and hash
+		// them in parallel, and this goroutine (the only one touching the
+		// transaction) writes the results in batches.
+		jobs := make(chan job, 256)
+		results := make(chan result, 256)
+
+		var walkErr error
+		go func() {
+			defer close(jobs)
+			walkErr = walk(ctx, root, matcher, f, skip, existing, opts.Log, jobs, results)
+		}()
+
+		var wg sync.WaitGroup
+		for range opts.workers() {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := range jobs {
+					select {
+					case results <- process(j, f.maxSize, opts.Log):
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+		go func() {
+			wg.Wait()
+			close(results)
+		}()
+
 		seen := make(map[string]bool, len(existing))
+		w := writer{s: s, rootID: r.ID, stats: &stats, log: opts.Log}
 		files := 0
+		var writeErr error
 
-		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-
-			if err != nil {
-				opts.Log.Warn().Err(err).Str("path", path).Msg("cannot read")
-				if d != nil && d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
+		for res := range results {
+			if writeErr != nil {
+				continue // drain so the other goroutines can exit
 			}
-
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			if rel == "." {
-				return nil
-			}
-			rel = filepath.ToSlash(rel)
-
-			if d.IsDir() {
-				if matcher.Ignored(rel, true) || (f.exclude != nil && f.exclude.Matches(rel, true)) {
-					return filepath.SkipDir
-				}
-				if err := matcher.LoadDir(root, rel); err != nil {
-					// Its rules are unknown, so skipping is safer than indexing it.
-					opts.Log.Warn().Err(err).Str("dir", rel).Msg("cannot read ignore file, skipping directory")
-					return filepath.SkipDir
-				}
-				return nil
-			}
-
-			if !d.Type().IsRegular() || skip[path] {
-				return nil
-			}
-			if matcher.Ignored(rel, false) || (f.exclude != nil && f.exclude.Matches(rel, false)) {
-				return nil
-			}
-			if f.include != nil && !f.include.Matches(rel, false) {
-				return nil
-			}
-			ext := normalizeExt(filepath.Ext(rel))
-			if len(f.exts) > 0 && !f.exts[ext] {
-				return nil
-			}
-
-			if opts.Progress != nil {
-				defer func() {
-					files++
-					opts.Progress(Progress{Root: root, Files: files, Path: rel})
-				}()
-			}
-
-			info, err := d.Info()
-			if err != nil {
-				opts.Log.Warn().Err(err).Str("path", rel).Msg("cannot stat")
-				return nil
-			}
-
-			old, known := existing[rel]
-			mtime := info.ModTime().UnixNano()
-
-			if known && old.Size == info.Size() && old.ModTime == mtime {
-				seen[rel] = true
-				stats.Unchanged++
-				return nil
-			}
-
-			if info.Size() > f.maxSize {
-				opts.Log.Debug().Str("path", rel).Int64("size", info.Size()).Msg("skipping large file")
+			if res.skipped {
 				stats.Skipped++
-				return nil
-			}
-
-			data, err := readText(path)
-			if err != nil {
-				opts.Log.Warn().Err(err).Str("path", rel).Msg("cannot read")
-				stats.Skipped++
-				return nil
-			}
-
-			data = bytes.TrimPrefix(data, utf8BOM)
-			if data == nil || !IsText(data) {
-				opts.Log.Debug().Str("path", rel).Msg("skipping non-text file")
-				stats.Skipped++
-				return nil
-			}
-
-			sum := sha256.Sum256(data)
-			hash := hex.EncodeToString(sum[:])
-			seen[rel] = true
-
-			if known && old.Hash == hash {
-				stats.Unchanged++
-				return s.TouchFile(ctx, old.ID, mtime)
-			}
-
-			_, err = s.UpsertFile(ctx, database.File{
-				RootID:  r.ID,
-				Path:    rel,
-				Ext:     ext,
-				Size:    info.Size(),
-				ModTime: mtime,
-				Hash:    hash,
-				Content: string(data),
-			})
-			if err != nil {
-				return err
-			}
-
-			if known {
-				stats.Updated++
-				opts.Log.Debug().Str("path", rel).Msg("updated")
 			} else {
-				stats.Added++
-				opts.Log.Debug().Str("path", rel).Msg("added")
+				seen[res.rel] = true
+				writeErr = w.add(ctx, res)
 			}
+			if writeErr != nil {
+				cancel()
+			}
+			if opts.Progress != nil {
+				files++
+				opts.Progress(Progress{Root: root, Files: files, Path: res.rel})
+			}
+		}
 
-			return nil
-		})
+		if writeErr != nil {
+			return writeErr
+		}
 		if walkErr != nil {
 			return walkErr
 		}
-
-		for path, st := range existing {
-			if seen[path] {
-				continue
-			}
-			if err := s.DeleteFile(ctx, st.ID); err != nil {
-				return err
-			}
-			stats.Removed++
-			opts.Log.Debug().Str("path", path).Msg("removed")
+		if err := w.flush(ctx); err != nil {
+			return err
 		}
+
+		var removed []int64
+		for path, st := range existing {
+			if !seen[path] {
+				removed = append(removed, st.ID)
+				opts.Log.Debug().Str("path", path).Msg("removed")
+			}
+		}
+		if err := s.DeleteFiles(ctx, removed); err != nil {
+			return err
+		}
+		stats.Removed = len(removed)
 
 		return s.SetRootIndexedAt(ctx, r.ID, time.Now().Unix())
 	})
 
 	return stats, err
+}
+
+// job is a candidate file that needs reading.
+type job struct {
+	path, rel, ext string
+	info           fs.FileInfo
+	old            database.FileState
+	known          bool
+}
+
+// result is a processed candidate file.
+type result struct {
+	job
+	// unchanged files matched on size and mtime, so were never read.
+	unchanged bool
+	// skipped files are not text, too large, or unreadable.
+	skipped bool
+	data    []byte
+	hash    string
+}
+
+// walk sends files needing a read to jobs. Files that are unchanged or too
+// large are decided without reading and sent straight to results.
+func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, skip map[string]bool,
+	existing map[string]database.FileState, log zerolog.Logger, jobs chan<- job, results chan<- result) error {
+
+	send := func(r result) error {
+		select {
+		case results <- r:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+
+		if err != nil {
+			log.Warn().Err(err).Str("path", path).Msg("cannot read")
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+
+		if d.IsDir() {
+			if matcher.Ignored(rel, true) || (f.exclude != nil && f.exclude.Matches(rel, true)) {
+				return filepath.SkipDir
+			}
+			if err := matcher.LoadDir(root, rel); err != nil {
+				// Its rules are unknown, so skipping is safer than indexing it.
+				log.Warn().Err(err).Str("dir", rel).Msg("cannot read ignore file, skipping directory")
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if !d.Type().IsRegular() || skip[path] {
+			return nil
+		}
+		if matcher.Ignored(rel, false) || (f.exclude != nil && f.exclude.Matches(rel, false)) {
+			return nil
+		}
+		if f.include != nil && !f.include.Matches(rel, false) {
+			return nil
+		}
+		ext := normalizeExt(filepath.Ext(rel))
+		if len(f.exts) > 0 && !f.exts[ext] {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			log.Warn().Err(err).Str("path", rel).Msg("cannot stat")
+			return send(result{job: job{rel: rel}, skipped: true})
+		}
+
+		old, known := existing[rel]
+		j := job{path: path, rel: rel, ext: ext, info: info, old: old, known: known}
+
+		if known && old.Size == info.Size() && old.ModTime == info.ModTime().UnixNano() {
+			return send(result{job: j, unchanged: true})
+		}
+
+		if info.Size() > f.maxSize {
+			log.Debug().Str("path", rel).Int64("size", info.Size()).Msg("skipping large file")
+			return send(result{job: j, skipped: true})
+		}
+
+		select {
+		case jobs <- j:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+}
+
+// process reads, sniffs and hashes one file.
+func process(j job, maxSize int64, log zerolog.Logger) result {
+
+	data, err := readText(j.path)
+	if err != nil {
+		log.Warn().Err(err).Str("path", j.rel).Msg("cannot read")
+		return result{job: j, skipped: true}
+	}
+
+	data = bytes.TrimPrefix(data, utf8BOM)
+	// The size can change between stat and read.
+	if data == nil || int64(len(data)) > maxSize || !IsText(data) {
+		log.Debug().Str("path", j.rel).Msg("skipping non-text file")
+		return result{job: j, skipped: true}
+	}
+
+	sum := sha256.Sum256(data)
+	return result{job: j, data: data, hash: hex.EncodeToString(sum[:])}
+}
+
+// Batches are written when they reach this many files or bytes.
+const (
+	batchFiles = 500
+	batchBytes = 32 << 20
+)
+
+// writer applies results to the database, batching inserts because FTS5
+// flushes its pending data at the start of every write statement.
+type writer struct {
+	s       *database.Store
+	rootID  int64
+	stats   *Stats
+	log     zerolog.Logger
+	batch   []database.File
+	batchSz int
+}
+
+func (w *writer) add(ctx context.Context, r result) error {
+
+	if r.unchanged {
+		w.stats.Unchanged++
+		return nil
+	}
+
+	mtime := r.info.ModTime().UnixNano()
+
+	if r.known && r.old.Hash == r.hash {
+		w.stats.Unchanged++
+		return w.s.TouchFile(ctx, r.old.ID, mtime)
+	}
+
+	if r.known {
+		w.stats.Updated++
+		w.log.Debug().Str("path", r.rel).Msg("updated")
+	} else {
+		w.stats.Added++
+		w.log.Debug().Str("path", r.rel).Msg("added")
+	}
+
+	w.batch = append(w.batch, database.File{
+		RootID:  w.rootID,
+		Path:    r.rel,
+		Ext:     r.ext,
+		Size:    r.info.Size(),
+		ModTime: mtime,
+		Hash:    r.hash,
+		Content: string(r.data),
+	})
+	w.batchSz += len(r.data)
+
+	if len(w.batch) >= batchFiles || w.batchSz >= batchBytes {
+		return w.flush(ctx)
+	}
+	return nil
+}
+
+func (w *writer) flush(ctx context.Context) error {
+	err := w.s.UpsertFiles(ctx, w.batch)
+	w.batch, w.batchSz = w.batch[:0], 0
+	return err
 }
 
 // IndexAll re-indexes every root in the database. A root that fails (for

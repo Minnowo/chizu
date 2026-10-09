@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vinovest/sqlx"
 )
@@ -106,6 +107,65 @@ func (s *Store) UpsertFile(ctx context.Context, f File) (int64, error) {
 		return 0, fmt.Errorf("upsert file %s: %w", f.Path, err)
 	}
 	return id, nil
+}
+
+// batchRows is how many rows go in one statement. FTS5 flushes its pending
+// index data at the start of every write statement, so one statement per
+// file is very slow; this keeps well under SQLite's variable limit.
+const batchRows = 500
+
+// UpsertFiles inserts or replaces many files using as few statements as possible.
+func (s *Store) UpsertFiles(ctx context.Context, files []File) error {
+
+	for len(files) > 0 {
+		n := min(len(files), batchRows)
+		chunk := files[:n]
+		files = files[n:]
+
+		var sb strings.Builder
+		args := make([]any, 0, len(chunk)*7)
+
+		sb.WriteString(`INSERT INTO files (root_id, path, ext, size, mtime, hash, content) VALUES `)
+		for i, f := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+			args = append(args, f.RootID, f.Path, f.Ext, f.Size, f.ModTime, f.Hash, f.Content)
+		}
+		sb.WriteString(`
+			ON CONFLICT (root_id, path) DO UPDATE SET
+				ext = excluded.ext, size = excluded.size, mtime = excluded.mtime,
+				hash = excluded.hash, content = excluded.content`)
+
+		if _, err := s.q.ExecContext(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("upsert %d files: %w", len(chunk), err)
+		}
+	}
+
+	return nil
+}
+
+// DeleteFiles removes many files by id.
+func (s *Store) DeleteFiles(ctx context.Context, ids []int64) error {
+
+	for len(ids) > 0 {
+		n := min(len(ids), batchRows)
+		chunk := ids[:n]
+		ids = ids[n:]
+
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+
+		q := `DELETE FROM files WHERE id IN (?` + strings.Repeat(", ?", len(chunk)-1) + `)`
+		if _, err := s.q.ExecContext(ctx, q, args...); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // TouchFile records a new mtime for a file whose content did not change.

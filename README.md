@@ -46,6 +46,9 @@ under `--max-size` (default 10MiB). Narrow it with `--ext md,txt`,
 `--include '*.md'` and `--exclude 'drafts/'`. These filters are saved per
 folder and reused by later re-indexes; `--clear-filters` forgets them.
 
+Indexing reads and hashes files on all CPUs (`--workers` / `-j` to change)
+and writes to SQLite from one goroutine in batches.
+
 `.chizuignore` files use gitignore syntax and may appear in any directory.
 If the indexed folder has no `.chizuignore`, these defaults apply:
 `.git/ .hg/ .svn/ node_modules/ .chizu.sqlite .chizu.sqlite-*`.

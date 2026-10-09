@@ -183,7 +183,7 @@ func TestIndexMultipleDirs(t *testing.T) {
 	writeTree(t, c, map[string]string{"c.md": "gamma"})
 	db := filepath.Join(t.TempDir(), "x.sqlite")
 
-	mustRun(t, "index", "--db", db, "-i", a, "-i", b, c)
+	mustRun(t, "index", "--db", db, "--workers", "2", "-i", a, "-i", b, c)
 
 	out := mustRun(t, "roots", "--db", db)
 	require.Equal(t, 3, strings.Count(out.stdout, "1 files"))

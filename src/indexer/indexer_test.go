@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -423,4 +424,47 @@ func TestUnreadableIgnoreFileSkipsThatDirectory(t *testing.T) {
 	stats, err := Index(t.Context(), db, dir, Options{})
 	require.NoError(t, err, "one unreadable ignore file must not abort the run")
 	require.Equal(t, []string{"a.md"}, indexedPaths(t, db, stats.Root), "its rules are unknown, so the directory is skipped")
+}
+
+func TestWorkerCountDoesNotChangeResults(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	files := map[string]string{}
+	for i := range 1200 {
+		switch i % 4 {
+		case 0:
+			files[fmt.Sprintf("bin/%d.dat", i)] = "\x00binary"
+		default:
+			files[fmt.Sprintf("d%d/f%d.md", i%7, i)] = fmt.Sprintf("note %d word%d", i, i%13)
+		}
+	}
+	writeTree(t, dir, files)
+
+	var want []string
+	for _, workers := range []int{1, 3, 16} {
+		db := openDB(t)
+		var progress int
+		stats, err := Index(ctx, db, dir, Options{Workers: workers, Progress: func(Progress) { progress++ }})
+		require.NoError(t, err)
+		require.Equal(t, 900, stats.Added)
+		require.Equal(t, 300, stats.Skipped)
+		require.Equal(t, 1200, progress)
+
+		got := indexedPaths(t, db, stats.Root)
+		if want == nil {
+			want = got
+		}
+		require.Equal(t, want, got, "workers=%d", workers)
+
+		// Re-indexing with changes still works with many workers.
+		require.NoError(t, os.Remove(filepath.Join(dir, "d1/f1.md")))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "d2/f2.md"), []byte("changed"), 0o644))
+		bumpMtime(t, filepath.Join(dir, "d2/f2.md"))
+		stats, err = Index(ctx, db, dir, Options{Workers: workers})
+		require.NoError(t, err)
+		require.Equal(t, Stats{Root: stats.Root, Updated: 1, Removed: 1, Unchanged: 898, Skipped: 300}, stats)
+
+		// Put the tree back for the next worker count.
+		writeTree(t, dir, map[string]string{"d1/f1.md": files["d1/f1.md"], "d2/f2.md": files["d2/f2.md"]})
+	}
 }
