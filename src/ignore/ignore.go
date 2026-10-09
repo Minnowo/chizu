@@ -30,8 +30,8 @@ var defaultGroups = []struct {
 }{
 	{"version control", []string{".git/", ".hg/", ".svn/", ".bzr/", ".jj/"}},
 	{"chizu", []string{".chizu.sqlite", ".chizu.sqlite-*"}},
-	{"editors", []string{".idea/", ".cache/"}},
-	{"java, kotlin: gradle, maven, intellij", []string{".gradle/", ".kotlin/", "build/", "target/", "out/"}},
+	{"editors: intellij, eclipse", []string{".idea/", ".metadata/", ".settings/", ".recommenders/", ".externalToolBuilders/", ".apt_generated/", ".factorypath", "RemoteSystemsTempFiles/", ".cache/"}},
+	{"java, kotlin: gradle, maven", []string{".gradle/", ".kotlin/", "build/", "target/", "out/"}},
 	{"c, c++: cmake, bazel", []string{"CMakeFiles/", "CMakeCache.txt", "cmake-build-*/", "_deps/", "bazel-*/"}},
 	{"javascript", []string{"node_modules/", "bower_components/", "dist/", ".next/", ".nuxt/", ".svelte-kit/", ".parcel-cache/", ".turbo/"}},
 	{"python", []string{"__pycache__/", ".venv/", "venv/", "*.egg-info/", ".tox/", ".mypy_cache/", ".pytest_cache/", ".ruff_cache/"}},

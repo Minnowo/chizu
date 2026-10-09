@@ -116,6 +116,7 @@ func TestDefaultsIgnoreBuildOutputAndDependencies(t *testing.T) {
 
 	for _, dir := range []string{
 		".gradle", "build", "app/build", "target", "out", ".idea", // gradle, maven, intellij
+		".metadata", "proj/.settings", ".recommenders", ".externalToolBuilders", ".apt_generated", "RemoteSystemsTempFiles", // eclipse
 		"CMakeFiles", "cmake-build-debug", "_deps", // cmake
 		"node_modules", "web/.next", "dist", // js
 		"__pycache__", ".venv", "pkg.egg-info", ".pytest_cache", // python
@@ -124,6 +125,7 @@ func TestDefaultsIgnoreBuildOutputAndDependencies(t *testing.T) {
 		require.True(t, m.Ignored(dir, true), dir)
 	}
 	require.True(t, m.Ignored("CMakeCache.txt", false))
+	require.True(t, m.Ignored("proj/.factorypath", false))
 	require.True(t, m.Ignored("sub/CMakeCache.txt", false))
 
 	// Directory rules do not catch files with the same name, or real content.
