@@ -210,6 +210,7 @@ func TestIndexAndRemove(t *testing.T) {
 
 func TestReadOnlyRejectsWrites(t *testing.T) {
 	s := newServer(t, true)
+	require.Equal(t, http.StatusForbidden, s.do(t, "POST", "/api/vacuum", nil).Code)
 
 	rec := s.do(t, "POST", "/api/index", map[string]any{})
 	require.Equal(t, http.StatusForbidden, rec.Code)
@@ -262,4 +263,13 @@ func TestFiles(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, s.do(t, "GET", "/api/files?limit=x", nil).Code)
 	require.Equal(t, http.StatusNotFound, s.do(t, "GET", "/api/files?dir=/not/indexed", nil).Code)
+}
+
+func TestVacuum(t *testing.T) {
+	s := newServer(t, false)
+	rec := s.do(t, "POST", "/api/vacuum", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	resp := decode[map[string]int64](t, rec)
+	require.Positive(t, resp["before"])
+	require.Positive(t, resp["after"])
 }

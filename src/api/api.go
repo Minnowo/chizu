@@ -58,6 +58,7 @@ func New(cfg Config) chi.Router {
 			r.Use(s.requireWritable)
 			r.Post("/index", s.handleIndex)
 			r.Delete("/roots", s.handleRemove)
+			r.Post("/vacuum", s.handleVacuum)
 		})
 	})
 
@@ -311,4 +312,26 @@ func (s *server) handleRemove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) handleVacuum(w http.ResponseWriter, r *http.Request) {
+
+	before, err := s.DB.Size()
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	if err := s.DB.Vacuum(r.Context()); err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	after, err := s.DB.Size()
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]int64{"before": before, "after": after})
 }

@@ -69,6 +69,7 @@ func New(w, errW io.Writer) *cli.Command {
 			searchCommand(),
 			rootsCommand(),
 			filesCommand(),
+			vacuumCommand(),
 			removeCommand(),
 			catCommand(),
 			serveCommand(),

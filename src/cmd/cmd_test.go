@@ -297,6 +297,18 @@ func TestFiles(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoResults)
 }
 
+func TestVacuum(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "vacuum", "--db", db)
+	require.Regexp(t, `^vacuumed .*x\.sqlite: \S+ -> \S+\n$`, out.stdout)
+
+	_, err := run(t, "vacuum", "--db", filepath.Join(t.TempDir(), "missing.sqlite"))
+	require.Error(t, err)
+}
+
 func TestCat(t *testing.T) {
 	dir := notesDir(t)
 	db := filepath.Join(t.TempDir(), "x.sqlite")

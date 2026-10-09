@@ -237,6 +237,49 @@ func filesCommand() *cli.Command {
 	}
 }
 
+func vacuumCommand() *cli.Command {
+	return &cli.Command{
+		Name:  "vacuum",
+		Usage: "shrink the database file after many files were removed",
+		Flags: []cli.Flag{dbFlag()},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+
+			db, dbFile, err := openDB(ctx, cmd, true, "")
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+
+			before, err := db.Size()
+			if err != nil {
+				return err
+			}
+			if err := db.Vacuum(ctx); err != nil {
+				return err
+			}
+			after, err := db.Size()
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.Root().Writer, "vacuumed %s: %s -> %s\n", dbFile, formatBytes(before), formatBytes(after))
+			return nil
+		},
+	}
+}
+
+func formatBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fGB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1fKB", float64(n)/(1<<10))
+	}
+	return fmt.Sprintf("%dB", n)
+}
+
 func removeCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "remove",

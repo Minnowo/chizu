@@ -2,7 +2,9 @@ package database
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -326,4 +328,91 @@ func TestListFiles(t *testing.T) {
 	require.EqualValues(t, 1, count(ListParams{Filter: Filter{Contains: "main"}}), "contains is case-insensitive")
 	require.EqualValues(t, 1, count(ListParams{Filter: Filter{Contains: "%_"}}), "wildcards are literal")
 	require.EqualValues(t, 0, count(ListParams{Filter: Filter{Contains: "nope"}}))
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	require.NoError(t, err)
+	return st.Size()
+}
+
+// fillAndDelete writes n files of ~10KB each and then deletes all but keep of them.
+func fillAndDelete(t *testing.T, db *DB, n, keep int) {
+	t.Helper()
+	ctx := t.Context()
+	root, err := db.UpsertRoot(ctx, "/r")
+	require.NoError(t, err)
+	files := make([]File, n)
+	for i := range files {
+		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d", i), Content: strings.Repeat(fmt.Sprintf("word%d ", i), 1000)}
+	}
+	require.NoError(t, db.UpsertFiles(ctx, files))
+	states, err := db.FileStates(ctx, root.ID)
+	require.NoError(t, err)
+	var ids []int64
+	for _, st := range states {
+		if len(ids) < n-keep {
+			ids = append(ids, st.ID)
+		}
+	}
+	require.NoError(t, db.DeleteFiles(ctx, ids))
+}
+
+func TestJournalSizeLimitOnEveryConnection(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	for range 3 {
+		conn, err := db.Connx(ctx)
+		require.NoError(t, err)
+		defer conn.Close()
+		var limit int64
+		require.NoError(t, conn.GetContext(ctx, &limit, `PRAGMA journal_size_limit`))
+		require.Equal(t, int64(journalSizeLimit), limit)
+	}
+}
+
+func TestCheckpointTruncatesWALWhileAnotherProcessHasItOpen(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "x.sqlite")
+
+	db, err := Open(ctx, path, Options{})
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Like `chizu serve` holding the database open in another process.
+	other, err := Open(ctx, path, Options{})
+	require.NoError(t, err)
+	defer other.Close()
+	_, err = other.ListRoots(ctx)
+	require.NoError(t, err)
+
+	fillAndDelete(t, db, 300, 300)
+	require.Greater(t, fileSize(t, path+"-wal"), int64(1<<20))
+
+	require.NoError(t, db.Checkpoint(ctx))
+	require.Zero(t, fileSize(t, path+"-wal"))
+}
+
+func TestVacuumShrinksTheDatabase(t *testing.T) {
+	ctx := t.Context()
+	db := openTestDB(t, Options{})
+	fillAndDelete(t, db, 500, 10)
+	require.NoError(t, db.Checkpoint(ctx))
+
+	before, err := db.Size()
+	require.NoError(t, err)
+
+	require.NoError(t, db.Vacuum(ctx))
+
+	after, err := db.Size()
+	require.NoError(t, err)
+	require.Less(t, after, before/4, "before %d after %d", before, after)
+	require.Zero(t, fileSize(t, db.Path()+"-wal"))
+
+	// Still searchable afterwards.
+	require.Equal(t, 10, matchCount(t, db, "word*"))
 }

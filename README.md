@@ -20,6 +20,12 @@ creates one in the current directory. One database can hold many folders:
 chizu index --db main.sqlite -i ~/notes -i ~/docs ~/wiki
 ```
 
+SQLite keeps the space freed by removed files and reuses it later, so the
+file does not shrink by itself; `chizu vacuum` gives the space back (it can
+run while `serve` or `mcp` are using the database). The `-wal` file is
+truncated after every index and removed when the last process closes the
+database.
+
 The tokenizer is chosen when a database is created:
 `--tokenizer unicode61` (default; words, stemming) or `--tokenizer trigram`
 (substring matching, larger index).
@@ -35,6 +41,7 @@ The tokenizer is chosen when a database is created:
 | `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
 | `cat <path\|id>` | print an indexed file |
+| `vacuum` | shrink the database after many files were removed |
 | `serve` | HTTP API, web UI and MCP (`--addr`, `--read-only`) |
 | `mcp` | MCP over stdio (`--read-only`) |
 
@@ -75,6 +82,7 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 | `GET /api/info` | db, tokenizer, driver, version |
 | `POST /api/index` `{"dirs": [], "exts": [], "include": [], "exclude": [], "max_size": 0, "clear_filters": false}` | stats |
 | `DELETE /api/roots?path=` | remove |
+| `POST /api/vacuum` | `{"before": bytes, "after": bytes}` |
 | `/mcp` | MCP streamable HTTP |
 
 ## MCP

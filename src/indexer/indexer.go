@@ -289,8 +289,17 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 
 		return s.SetRootIndexedAt(ctx, r.ID, time.Now().Unix())
 	})
+	if err != nil {
+		return stats, err
+	}
 
-	return stats, err
+	// An index is one big transaction, so the WAL can grow as large as the
+	// changes. Shrink it now rather than when every process closes the DB.
+	if err := db.Checkpoint(ctx); err != nil {
+		opts.Log.Warn().Err(err).Msg("checkpoint failed")
+	}
+
+	return stats, nil
 }
 
 // job is a candidate file that needs reading.

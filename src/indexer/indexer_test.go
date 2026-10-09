@@ -468,3 +468,30 @@ func TestWorkerCountDoesNotChangeResults(t *testing.T) {
 		writeTree(t, dir, map[string]string{"d1/f1.md": files["d1/f1.md"], "d2/f2.md": files["d2/f2.md"]})
 	}
 }
+
+func TestIndexTruncatesWALWhileAnotherProcessHasItOpen(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "idx.sqlite")
+	db, err := database.Open(ctx, path, database.Options{})
+	require.NoError(t, err)
+	defer db.Close()
+
+	other, err := database.Open(ctx, path, database.Options{})
+	require.NoError(t, err)
+	defer other.Close()
+
+	dir := t.TempDir()
+	files := map[string]string{}
+	for i := range 200 {
+		files[fmt.Sprintf("f%d.txt", i)] = strings.Repeat(fmt.Sprintf("word%d ", i), 2000)
+	}
+	writeTree(t, dir, files)
+
+	_, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+
+	st, err := os.Stat(path + "-wal")
+	if err == nil {
+		require.Zero(t, st.Size(), "WAL is truncated after indexing")
+	}
+}
