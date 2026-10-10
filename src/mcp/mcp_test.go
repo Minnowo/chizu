@@ -244,3 +244,26 @@ func TestListFilesTool(t *testing.T) {
 	res = f.call(t, "list_files", map[string]any{"dir": "/not/indexed"})
 	require.True(t, res.IsError)
 }
+
+func TestReadFileToolWithQuery(t *testing.T) {
+	f := newFixture(t, false)
+	path := filepath.Join(f.dir, "monday.md")
+
+	res := f.call(t, "read_file", map[string]any{"path": path, "query": "line"})
+	require.False(t, res.IsError, text(t, res))
+	require.Equal(t, "3: line three\n4: line four\n2 matching lines", text(t, res))
+
+	// The line range narrows which matches are returned.
+	res = f.call(t, "read_file", map[string]any{"path": path, "query": "line", "start_line": 4})
+	require.Equal(t, "4: line four\n1 matching line", text(t, res))
+
+	res = f.call(t, "read_file", map[string]any{"path": path, "query": "heron OR four", "raw": true})
+	require.Equal(t, "2: Saw a heron.\n4: line four\n2 matching lines", text(t, res))
+
+	res = f.call(t, "read_file", map[string]any{"path": path, "query": "zebra"})
+	require.False(t, res.IsError)
+	require.Equal(t, "No matching lines.", text(t, res))
+
+	res = f.call(t, "read_file", map[string]any{"path": path, "query": "foo AND (", "raw": true})
+	require.True(t, res.IsError)
+}

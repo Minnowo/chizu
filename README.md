@@ -38,14 +38,15 @@ The tokenizer is chosen when a database is created:
 | `index [dir...]` | index dirs; with no args, re-index every indexed dir |
 | `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--json`) |
 | `roots` | list indexed dirs |
-| `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--json`) |
+| `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--ids`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
-| `cat <path\|id>` | print an indexed file |
+| `cat <path\|id>` | print an indexed file (`--match <query>` prints only its matching lines, numbered) |
 | `vacuum` | shrink the database after many files were removed |
 | `serve` | HTTP API, web UI and MCP (`--addr`, `--read-only`) |
 | `mcp` | MCP over stdio (`--read-only`) |
 
-`search` exits 1 when nothing matched and 2 on error, like grep.
+`search` shows each file's id next to its path, so `chizu cat 12` can stand
+in for a long path. `search` exits 1 when nothing matched and 2 on error, like grep.
 
 ## What gets indexed
 
@@ -78,7 +79,7 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 | `GET /api/search?q=&raw=&dir=&path=&ext=&limit=&offset=&lines=` | `{"results": [...]}` |
 | `GET /api/roots` | `{"roots": [...]}` |
 | `GET /api/files?q=&dir=&path=&ext=&limit=&offset=` (`q` filters by path) | `{"total": n, "files": [...]}` |
-| `GET /api/file?path=` or `?id=` (`&raw=1` for text/plain) | file |
+| `GET /api/file?path=` or `?id=` (`&raw=1` for text/plain; `&q=` adds `matches`, the matching lines, with `&fts=1` for FTS5 syntax) | file |
 | `GET /api/info` | db, tokenizer, driver, version |
 | `POST /api/index` `{"dirs": [], "exts": [], "include": [], "exclude": [], "max_size": 0, "clear_filters": false}` | stats |
 | `DELETE /api/roots?path=` | remove |
@@ -87,7 +88,8 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 
 ## MCP
 
-Tools: `search`, `list_roots`, `list_files`, `read_file`, plus `index` and `remove_root`
+Tools: `search`, `list_roots`, `list_files`, `read_file` (with `query`, only
+the matching lines), plus `index` and `remove_root`
 unless `--read-only`. For Claude Code:
 
 ```sh

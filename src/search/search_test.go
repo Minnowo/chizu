@@ -292,3 +292,54 @@ func TestListFiles(t *testing.T) {
 	_, err = ListFiles(ctx, f.db, FileQuery{Dir: "/elsewhere"})
 	require.ErrorIs(t, err, ErrNotIndexed)
 }
+
+func TestFileMatches(t *testing.T) {
+	f := newFixture(t, "")
+	ctx := t.Context()
+	results, err := Search(ctx, f.db, Query{Text: "heron"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	id := results[0].FileID // journal/monday.md
+
+	lines, err := FileMatches(ctx, f.db, id, "running", false)
+	require.NoError(t, err)
+	require.Equal(t, []Line{
+		{Number: 2, Segments: []Segment{{Text: "Went "}, {Text: "running", Match: true}, {Text: " in the park."}}},
+		{Number: 4, Segments: []Segment{{Text: "Running", Match: true}, {Text: " again tomorrow."}}},
+	}, lines)
+
+	lines, err = FileMatches(ctx, f.db, id, "heron OR park", true)
+	require.NoError(t, err)
+	require.Len(t, lines, 2)
+
+	// A file the query does not match has no matching lines, not an error.
+	lines, err = FileMatches(ctx, f.db, id, "flour", false)
+	require.NoError(t, err)
+	require.Empty(t, lines)
+
+	_, err = FileMatches(ctx, f.db, id, "", false)
+	require.ErrorIs(t, err, ErrEmptyQuery)
+	_, err = FileMatches(ctx, f.db, id, "foo AND (", true)
+	require.ErrorIs(t, err, ErrBadQuery)
+}
+
+func TestFileMatchesKeepsLongLinesWhole(t *testing.T) {
+	ctx := t.Context()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "s.sqlite"), database.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+	root, err := db.UpsertRoot(ctx, "/r")
+	require.NoError(t, err)
+	long := strings.Repeat("a ", 500) + "needle" + strings.Repeat(" b", 500)
+	id, err := db.UpsertFile(ctx, database.File{RootID: root.ID, Path: "x.txt", Content: long})
+	require.NoError(t, err)
+
+	lines, err := FileMatches(ctx, db, id, "needle", false)
+	require.NoError(t, err)
+	require.Len(t, lines, 1)
+	var sb strings.Builder
+	for _, s := range lines[0].Segments {
+		sb.WriteString(s.Text)
+	}
+	require.Equal(t, long, sb.String())
+}

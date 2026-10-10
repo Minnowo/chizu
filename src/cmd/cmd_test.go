@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -328,6 +329,55 @@ func TestCat(t *testing.T) {
 	require.ErrorIs(t, err, database.ErrNotFound)
 }
 
+func TestCatMatch(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+	path := filepath.Join(dir, "monday.md")
+
+	out := mustRun(t, "cat", "--db", db, "--color", "never", "--match", "heron", path)
+	require.Equal(t, "3: Saw a heron.\n", out.stdout)
+
+	out = mustRun(t, "cat", "--db", db, "--color", "never", "--raw", "-m", "monday OR heron", path)
+	require.Equal(t, "1: # Monday\n3: Saw a heron.\n", out.stdout)
+
+	out = mustRun(t, "cat", "--db", db, "--json", "-m", "heron", path)
+	var lines []search.Line
+	require.NoError(t, json.Unmarshal([]byte(out.stdout), &lines))
+	require.Len(t, lines, 1)
+	require.Equal(t, 3, lines[0].Number)
+
+	_, err := run(t, "cat", "--db", db, "-m", "zebra", path)
+	require.ErrorIs(t, err, ErrNoResults)
+}
+
+func TestSearchShowsFileIDsForCat(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "search", "--db", db, "--color", "never", "rained")
+	m := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(filepath.Join(dir, "tuesday.md")) + ` \(id (\d+)\)$`).FindStringSubmatch(out.stdout)
+	require.NotNil(t, m, out.stdout)
+
+	out = mustRun(t, "cat", "--db", db, m[1])
+	require.Equal(t, "# Tuesday\nRained all day.", out.stdout)
+}
+
+func TestFilesWithIDs(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "files", "--db", db, "--ids", "tuesday")
+	id, path, ok := strings.Cut(strings.TrimSuffix(out.stdout, "\n"), "\t")
+	require.True(t, ok, out.stdout)
+	require.Equal(t, filepath.Join(dir, "tuesday.md"), path)
+
+	out = mustRun(t, "cat", "--db", db, id)
+	require.Equal(t, "# Tuesday\nRained all day.", out.stdout)
+}
+
 func TestDefaultDBIsFoundInCwdOrParents(t *testing.T) {
 	dir := notesDir(t)
 	t.Chdir(dir)
@@ -345,8 +395,8 @@ func TestDefaultDBIsFoundInCwdOrParents(t *testing.T) {
 	// are shown relative to the working directory.
 	t.Chdir(filepath.Join(dir, "code"))
 	out = mustRun(t, "search", "heron")
-	require.Contains(t, out.stdout, "main.go\n")
-	require.Contains(t, out.stdout, filepath.Join("..", "monday.md")+"\n")
+	require.Regexp(t, `(?m)^main\.go \(id \d+\)$`, out.stdout)
+	require.Regexp(t, `(?m)^`+regexp.QuoteMeta(filepath.Join("..", "monday.md"))+` \(id \d+\)$`, out.stdout)
 }
 
 func TestDBFromEnv(t *testing.T) {

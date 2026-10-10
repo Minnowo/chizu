@@ -262,7 +262,22 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, f)
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeJSON(w, http.StatusOK, f)
+		return
+	}
+
+	matches, err := search.FileMatches(r.Context(), s.DB, f.ID, q, boolParam(r, "fts"))
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, struct {
+		database.File
+		Matches []search.Line `json:"matches"`
+	}{f, matches})
 }
 
 type indexRequest struct {

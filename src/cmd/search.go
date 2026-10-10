@@ -24,6 +24,7 @@ const (
 	colorPath  = "\x1b[35m"
 	colorLine  = "\x1b[32m"
 	colorMatch = "\x1b[1;31m"
+	colorID    = "\x1b[2m"
 	colorReset = "\x1b[0m"
 )
 
@@ -46,7 +47,7 @@ SQLite FTS5 unchanged, allowing AND, OR, NOT, NEAR() and column filters.`,
 			&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Value: search.DefaultLimit, Usage: "max files"},
 			&cli.IntFlag{Name: "offset", Usage: "skip this many files"},
 			&cli.IntFlag{Name: "lines", Value: search.DefaultMaxLines, Usage: "max matching lines shown per file"},
-			&cli.StringFlag{Name: "color", Value: "auto", Usage: "auto, always or never"},
+			colorFlag(),
 			jsonFlag(),
 		},
 		Action: runSearch,
@@ -86,14 +87,7 @@ func runSearch(ctx context.Context, cmd *cli.Command) error {
 			return err
 		}
 	} else {
-		color := false
-		switch cmd.String("color") {
-		case "always":
-			color = true
-		case "auto":
-			color = isTerminal(w) && os.Getenv("NO_COLOR") == ""
-		}
-		printResults(w, results, color)
+		printResults(w, results, useColor(cmd, w))
 	}
 
 	if len(results) == 0 {
@@ -102,35 +96,60 @@ func runSearch(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-func printResults(w io.Writer, results []search.Result, color bool) {
+func colorFlag() cli.Flag {
+	return &cli.StringFlag{Name: "color", Value: "auto", Usage: "auto, always or never"}
+}
 
-	wd, _ := os.Getwd()
+// useColor resolves the --color flag for output going to w.
+func useColor(cmd *cli.Command, w io.Writer) bool {
+	switch cmd.String("color") {
+	case "always":
+		return true
+	case "auto":
+		return isTerminal(w) && os.Getenv("NO_COLOR") == ""
+	}
+	return false
+}
 
-	paint := func(c, s string) string {
+func painter(color bool) func(c, s string) string {
+	return func(c, s string) string {
 		if !color {
 			return s
 		}
 		return c + s + colorReset
 	}
+}
+
+// printLines prints numbered lines with their matches highlighted.
+func printLines(w io.Writer, lines []search.Line, color bool) {
+	paint := painter(color)
+	for _, l := range lines {
+		var sb strings.Builder
+		for _, s := range l.Segments {
+			if s.Match {
+				sb.WriteString(paint(colorMatch, s.Text))
+			} else {
+				sb.WriteString(s.Text)
+			}
+		}
+		fmt.Fprintf(w, "%s: %s\n", paint(colorLine, strconv.Itoa(l.Number)), sb.String())
+	}
+}
+
+func printResults(w io.Writer, results []search.Result, color bool) {
+
+	wd, _ := os.Getwd()
+	paint := painter(color)
 
 	for i, r := range results {
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
 
-		fmt.Fprintln(w, paint(colorPath, displayPath(wd, r.Root, r.AbsPath)))
+		// The id is there for `chizu cat <id>`, which is easier to type than a long path.
+		fmt.Fprintf(w, "%s %s\n", paint(colorPath, displayPath(wd, r.Root, r.AbsPath)), paint(colorID, fmt.Sprintf("(id %d)", r.FileID)))
 
-		for _, l := range r.Lines {
-			var sb strings.Builder
-			for _, s := range l.Segments {
-				if s.Match {
-					sb.WriteString(paint(colorMatch, s.Text))
-				} else {
-					sb.WriteString(s.Text)
-				}
-			}
-			fmt.Fprintf(w, "%s: %s\n", paint(colorLine, strconv.Itoa(l.Number)), sb.String())
-		}
+		printLines(w, r.Lines, color)
 
 		if more := r.LineCount - len(r.Lines); more > 0 {
 			fmt.Fprintf(w, "… %d more matching lines\n", more)
@@ -190,6 +209,7 @@ func filesCommand() *cli.Command {
 			&cli.StringFlag{Name: "path", Aliases: []string{"p"}, Usage: "only files whose path (relative to its indexed root) starts with `PREFIX`"},
 			&cli.StringSliceFlag{Name: "ext", Aliases: []string{"e"}, Usage: "only these extensions, e.g. --ext md,txt"},
 			&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Usage: "max files (default all)"},
+			&cli.BoolFlag{Name: "ids", Aliases: []string{"i"}, Usage: "print each file's id and a tab before its path (for chizu cat <id>)"},
 			&cli.IntFlag{Name: "offset", Usage: "skip this many files"},
 			jsonFlag(),
 		},
@@ -222,6 +242,9 @@ func filesCommand() *cli.Command {
 				wd, _ := os.Getwd()
 				bw := bufio.NewWriter(w)
 				for _, f := range list.Files {
+					if cmd.Bool("ids") {
+						fmt.Fprintf(bw, "%d\t", f.FileID)
+					}
 					fmt.Fprintln(bw, displayPath(wd, f.Root, f.AbsPath))
 				}
 				if err := bw.Flush(); err != nil {
@@ -314,7 +337,15 @@ func catCommand() *cli.Command {
 		Name:      "cat",
 		Usage:     "print an indexed file's content, by path or file id",
 		ArgsUsage: "<path|id>",
-		Flags:     []cli.Flag{dbFlag(), jsonFlag()},
+		Description: `With --match, print only the lines matching a search query, numbered,
+instead of the content.`,
+		Flags: []cli.Flag{
+			dbFlag(),
+			&cli.StringFlag{Name: "match", Aliases: []string{"m"}, Usage: "only print lines matching `QUERY`"},
+			&cli.BoolFlag{Name: "raw", Aliases: []string{"r"}, Usage: "--match uses FTS5 query syntax"},
+			colorFlag(),
+			jsonFlag(),
+		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() != 1 {
 				return fmt.Errorf("usage: chizu cat <path|id>")
@@ -331,10 +362,28 @@ func catCommand() *cli.Command {
 				return err
 			}
 
-			if cmd.Bool("json") {
-				return writeJSON(cmd.Root().Writer, f)
+			w := cmd.Root().Writer
+
+			if query := cmd.String("match"); query != "" {
+				lines, err := search.FileMatches(ctx, db, f.ID, query, cmd.Bool("raw"))
+				if err != nil {
+					return err
+				}
+				if cmd.Bool("json") {
+					err = writeJSON(w, lines)
+				} else {
+					printLines(w, lines, useColor(cmd, w))
+				}
+				if err == nil && len(lines) == 0 {
+					return ErrNoResults
+				}
+				return err
 			}
-			_, err = io.WriteString(cmd.Root().Writer, f.Content)
+
+			if cmd.Bool("json") {
+				return writeJSON(w, f)
+			}
+			_, err = io.WriteString(w, f.Content)
 			return err
 		},
 	}

@@ -22,6 +22,9 @@
   .flex-col { flex-direction: column; }
   .flex-wrap { flex-wrap: wrap; }
   .flex-1 { flex: 1 1 0%; min-width: 0; }
+  /* A starting width for a flex-1 item, so its row wraps instead of squeezing it. */
+  .basis-48 { flex-basis: 12rem; }
+  .basis-64 { flex-basis: 16rem; }
   .items-center { align-items: center; }
   .items-end { align-items: flex-end; }
   .items-baseline { align-items: baseline; }
@@ -36,22 +39,30 @@
   .path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
   .field { min-width: 10rem; }
   .lines { background: var(--color-c-surface-container-2); font-size: .875rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .lines .n { color: var(--color-c-on-surface-variant); display: inline-block; min-width: 3.5em; text-align: right; padding-right: .8em; user-select: none; }
+  .n { color: var(--color-c-on-surface-variant); display: inline-block; min-width: 3.5em; text-align: right; padding-right: .8em; user-select: none; }
   mark { background: var(--color-c-tertiary-container); color: var(--color-c-on-tertiary-container); border-radius: var(--radius-sm); }
   .error { color: var(--color-c-error); }
   summary { cursor: pointer; }
   dialog {
-    width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 64px);
+    width: min(960px, calc(100vw - 16px)); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px);
     border: 0; color: var(--color-c-on-surface);
   }
+  dialog[open] { display: flex; flex-direction: column; }
   dialog::backdrop { background: rgb(0 0 0 / .5); }
-  dialog pre { background: var(--color-c-surface-container-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; }
+  dialog pre { flex: 1; min-height: 0; overflow: auto; background: var(--color-c-surface-container-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; }
+  #viewer-body > div { display: flex; }
+  #viewer-body > div > :last-child { flex: 1; min-width: 0; }
+  #viewer-body .n { flex: none; min-width: calc(var(--digits, 3) * 1ch + .8em); }
+  #viewer-body.nowrap { white-space: pre; overflow-wrap: normal; }
+  #viewer-body.nowrap > div { width: max-content; min-width: 100%; }
+  #viewer-body .hit { background: var(--color-c-primary-hover-tint); }
+  #viewer-body .current { background: var(--color-c-primary-focus-tint); }
 </style>
 </head>
 <body>
 <main class="flex flex-col gap-4">
   <header class="flex flex-wrap items-center gap-2">
-    <div class="flex-1 flex flex-col">
+    <div class="flex-1 basis-48 flex flex-col">
       <h1>chizu</h1>
       <small id="info" class="path"></small>
     </div>
@@ -100,17 +111,23 @@
   </details>
 </main>
 
-<dialog id="viewer" class="surface-1" aria-labelledby="viewer-name">
-  <div class="flex flex-col gap-2">
-    <div class="flex items-center gap-2">
-      <div class="flex-1 flex flex-col">
-        <h2 id="viewer-name" class="path"></h2>
-        <small id="viewer-path" class="path"></small>
-      </div>
-      <button type="button" id="viewer-close">Close</button>
+<dialog id="viewer" class="surface-1 gap-2" aria-labelledby="viewer-name">
+  <div class="flex flex-wrap items-center gap-2">
+    <div class="flex-1 basis-64 flex flex-col">
+      <h2 id="viewer-name" class="path"></h2>
+      <small id="viewer-path" class="path"></small>
     </div>
-    <pre id="viewer-body"></pre>
+    <div id="viewer-nav" class="flex flex-wrap items-center gap-2" hidden>
+      <small id="viewer-pos" aria-live="polite"></small>
+      <button type="button" id="viewer-prev">Previous</button>
+      <button type="button" id="viewer-next">Next</button>
+    </div>
+    <label class="flex items-center gap-2">
+      <input type="checkbox" id="viewer-wrap" checked> Wrap lines
+    </label>
+    <button type="button" id="viewer-close">Close</button>
   </div>
+  <pre id="viewer-body"></pre>
 </dialog>
 
 <script>
@@ -137,14 +154,15 @@ function setStatus(text, isError = false) {
   $("status").classList.toggle("error", isError);
 }
 
-// fileLink is a real link to the raw file (so middle-click works) that opens the viewer on a plain click.
-function fileLink(f, text) {
+// fileLink is a real link to the raw file (so middle-click works) that opens
+// the viewer on a plain click, highlighting query's matches if given.
+function fileLink(f, text, query) {
   return el("a", {
     className: "path", href: "/api/file?raw=1&id=" + f.file_id, textContent: text,
     onclick: (e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
-      openFile(f);
+      openFile(f, query);
     },
   });
 }
@@ -210,12 +228,13 @@ async function runSearch() {
   params.set("lines", "5");
   params.set("limit", "50");
 
+  const query = { q, raw: $("raw").checked };
   setStatus("Searching…");
   try {
     const { results } = await api("/api/search?" + params);
     if (id !== seq) return;
     setStatus(results.length ? `${results.length} file${results.length === 1 ? "" : "s"}` : "No results");
-    $("results").replaceChildren(...results.map(renderResult));
+    $("results").replaceChildren(...results.map(r => renderResult(r, query)));
   } catch (err) {
     if (id !== seq) return;
     setStatus(err.message, true);
@@ -223,7 +242,7 @@ async function runSearch() {
   }
 }
 
-function renderResult(r) {
+function renderResult(r, query) {
   const lines = el("pre", { className: "lines" });
   for (const l of r.lines || []) {
     lines.append(el("div", {}, el("span", { className: "n", textContent: l.line }), ...segments(l.segments)));
@@ -232,7 +251,7 @@ function renderResult(r) {
 
   const card = el("article", { className: "surface-1 flex flex-col gap-2" },
     el("div", { className: "flex flex-wrap items-baseline gap-2" },
-      el("h4", { className: "flex-1" }, fileLink(r, r.path)),
+      el("h4", { className: "flex-1 basis-64" }, fileLink(r, r.path, query)),
       el("small", { className: "path", textContent: r.root })),
     lines);
 
@@ -296,17 +315,63 @@ function formatSize(n) {
 
 /* ---- viewer, roots, info ---- */
 
-async function openFile(f) {
+let hits = [];  // the viewer's matching line elements
+let current = -1;
+
+async function openFile(f, query) {
   $("viewer-name").textContent = f.path.split("/").pop();
   $("viewer-path").textContent = f.abs_path;
   $("viewer-body").textContent = "Loading…";
+  $("viewer-nav").hidden = true;
+  hits = [];
+  current = -1;
   $("viewer").showModal();
+
+  const params = new URLSearchParams({ id: f.file_id });
+  if (query) {
+    params.set("q", query.q);
+    if (query.raw) params.set("fts", "true");
+  }
   try {
-    const file = await api("/api/file?id=" + f.file_id);
-    $("viewer-body").textContent = file.content;
+    const file = await api("/api/file?" + params);
+    renderFile(file.content, file.matches || []);
   } catch (err) {
     $("viewer-body").textContent = err.message;
   }
+}
+
+function renderFile(content, matches) {
+  const marked = new Map(matches.map(m => [m.line, m.segments]));
+  const lines = content.split("\n");
+  const body = $("viewer-body");
+  body.style.setProperty("--digits", String(lines.length).length);
+
+  const frag = document.createDocumentFragment();
+  lines.forEach((text, i) => {
+    const segs = marked.get(i + 1);
+    const row = el("div", {},
+      el("span", { className: "n", textContent: i + 1 }),
+      el("span", {}, ...(segs ? segments(segs) : [text.replace(/\r$/, "")])));
+    if (segs) {
+      row.className = "hit";
+      hits.push(row);
+    }
+    frag.append(row);
+  });
+  body.replaceChildren(frag);
+  body.scrollTop = 0;
+
+  $("viewer-nav").hidden = hits.length === 0;
+  if (hits.length) goToMatch(0);
+}
+
+function goToMatch(i) {
+  if (!hits.length) return;
+  hits[current]?.classList.remove("current");
+  current = (i + hits.length) % hits.length;
+  hits[current].classList.add("current");
+  hits[current].scrollIntoView({ block: "center" });
+  $("viewer-pos").textContent = `Line ${hits[current].firstChild.textContent}, match ${current + 1} of ${hits.length}`;
 }
 
 async function loadRoots() {
@@ -348,6 +413,19 @@ $("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
 for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => setView(b.dataset.view));
 $("more").addEventListener("click", () => listFiles(true));
 $("viewer-close").addEventListener("click", () => $("viewer").close());
+function applyWrap(wrap) {
+  $("viewer-body").classList.toggle("nowrap", !wrap);
+  $("viewer-wrap").checked = wrap;
+}
+$("viewer-wrap").addEventListener("change", () => {
+  const wrap = $("viewer-wrap").checked;
+  applyWrap(wrap);
+  try { localStorage.setItem("chizu-wrap", wrap); } catch {}
+  hits[current]?.scrollIntoView({ block: "center" });
+});
+try { applyWrap(localStorage.getItem("chizu-wrap") !== "false"); } catch { applyWrap(true); }
+$("viewer-prev").addEventListener("click", () => goToMatch(current - 1));
+$("viewer-next").addEventListener("click", () => goToMatch(current + 1));
 $("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) $("viewer").close(); });
 
 let typing;

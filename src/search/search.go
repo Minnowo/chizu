@@ -343,6 +343,41 @@ func parseMarked(s string) []Segment {
 	return segs
 }
 
+// FileMatches returns every line of a file that matches the query, uncropped.
+// A file the query does not match has no lines.
+func FileMatches(ctx context.Context, db *database.DB, fileID int64, text string, raw bool) ([]Line, error) {
+
+	match, err := BuildMatch(text, raw)
+	if err != nil {
+		return nil, err
+	}
+
+	marked, err := db.Highlight(ctx, match, fileID)
+	if errors.Is(err, database.ErrNotFound) {
+		return []Line{}, nil
+	}
+	if err != nil {
+		return nil, queryError(err)
+	}
+
+	lines := []Line{}
+	for i, segs := range splitLines(parseMarked(marked)) {
+		if hasMatch(segs) {
+			lines = append(lines, Line{Number: i + 1, Segments: segs})
+		}
+	}
+	return lines, nil
+}
+
+func hasMatch(segs []Segment) bool {
+	for _, s := range segs {
+		if s.Match {
+			return true
+		}
+	}
+	return false
+}
+
 // matchingLines returns up to maxLines lines containing a match, and how
 // many lines matched in total. Line numbers start at 1.
 func matchingLines(marked string, maxLines int) ([]Line, int) {
@@ -352,14 +387,7 @@ func matchingLines(marked string, maxLines int) ([]Line, int) {
 
 	for i, segs := range splitLines(parseMarked(marked)) {
 
-		hasMatch := false
-		for _, s := range segs {
-			if s.Match {
-				hasMatch = true
-				break
-			}
-		}
-		if !hasMatch {
+		if !hasMatch(segs) {
 			continue
 		}
 

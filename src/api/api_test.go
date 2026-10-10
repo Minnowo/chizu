@@ -280,3 +280,29 @@ func TestVacuum(t *testing.T) {
 	require.Positive(t, resp["before"])
 	require.Positive(t, resp["after"])
 }
+
+func TestFileWithQueryReturnsMatchingLines(t *testing.T) {
+	s := newServer(t, false)
+	abs := url.QueryEscape(filepath.Join(s.dir, "monday.md"))
+
+	rec := s.do(t, "GET", "/api/file?path="+abs+"&q=heron", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	resp := decode[struct {
+		Content string        `json:"content"`
+		Matches []search.Line `json:"matches"`
+	}](t, rec)
+	require.Equal(t, "# Monday\nSaw a heron.", resp.Content)
+	require.Equal(t, []search.Line{{Number: 2, Segments: []search.Segment{{Text: "Saw a "}, {Text: "heron", Match: true}, {Text: "."}}}}, resp.Matches)
+
+	rec = s.do(t, "GET", "/api/file?path="+abs+"&fts=true&q="+url.QueryEscape("monday OR heron"), nil)
+	require.Len(t, decode[struct {
+		Matches []search.Line `json:"matches"`
+	}](t, rec).Matches, 2)
+
+	// Without q there is no matches field.
+	rec = s.do(t, "GET", "/api/file?path="+abs, nil)
+	require.NotContains(t, rec.Body.String(), `"matches"`)
+
+	rec = s.do(t, "GET", "/api/file?path="+abs+"&fts=true&q="+url.QueryEscape("foo AND ("), nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}

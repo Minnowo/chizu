@@ -84,12 +84,15 @@ Set raw=true for SQLite FTS5 syntax: AND, OR, NOT, NEAR(a b, 5), path:term.`),
 	), h.listFiles)
 
 	s.AddTool(gomcp.NewTool("read_file",
-		gomcp.WithDescription("Read an indexed file by absolute path or file_id, optionally only a range of lines."),
+		gomcp.WithDescription(`Read an indexed file by absolute path or file_id, optionally only a range of lines.
+With query, return only the lines that match it (all of them, uncropped, prefixed with line numbers) instead of the content.`),
 		gomcp.WithReadOnlyHintAnnotation(true),
 		gomcp.WithString("path", gomcp.Description("absolute path of the file")),
 		gomcp.WithNumber("file_id", gomcp.Description("file id from search results")),
 		gomcp.WithNumber("start_line", gomcp.Description("first line to return (1-based)")),
 		gomcp.WithNumber("end_line", gomcp.Description("last line to return (inclusive)")),
+		gomcp.WithString("query", gomcp.Description("only return lines matching this search, same syntax as the search tool")),
+		gomcp.WithBoolean("raw", gomcp.Description("treat query as FTS5 syntax")),
 	), h.readFile)
 
 	if !cfg.ReadOnly {
@@ -253,9 +256,14 @@ func (h *handlers) readFile(ctx context.Context, req gomcp.CallToolRequest) (*go
 		return gomcp.NewToolResultError(err.Error()), nil
 	}
 
+	start, end := req.GetInt("start_line", 0), req.GetInt("end_line", 0)
+
+	if query := req.GetString("query", ""); query != "" {
+		return h.matchingLines(ctx, f, query, req.GetBool("raw", false), start, end)
+	}
+
 	content := f.Content
 
-	start, end := req.GetInt("start_line", 0), req.GetInt("end_line", 0)
 	if start > 0 || end > 0 {
 		lines := strings.Split(content, "\n")
 		start = max(start, 1)
@@ -269,6 +277,38 @@ func (h *handlers) readFile(ctx context.Context, req gomcp.CallToolRequest) (*go
 	}
 
 	return gomcp.NewToolResultText(content), nil
+}
+
+// matchingLines answers read_file with a query: the matching lines within start..end (0 means unbounded).
+func (h *handlers) matchingLines(ctx context.Context, f database.File, query string, raw bool, start, end int) (*gomcp.CallToolResult, error) {
+
+	all, err := search.FileMatches(ctx, h.DB, f.ID, query, raw)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+
+	lines := []search.Line{}
+	for _, l := range all {
+		if (start <= 0 || l.Number >= start) && (end <= 0 || l.Number <= end) {
+			lines = append(lines, l)
+		}
+	}
+
+	if len(lines) == 0 {
+		return gomcp.NewToolResultStructured(map[string]any{"matches": lines}, "No matching lines."), nil
+	}
+
+	var sb strings.Builder
+	for _, l := range lines {
+		fmt.Fprintf(&sb, "%d: %s\n", l.Number, plain(l.Segments))
+	}
+	if len(lines) == 1 {
+		sb.WriteString("1 matching line")
+	} else {
+		fmt.Fprintf(&sb, "%d matching lines", len(lines))
+	}
+
+	return gomcp.NewToolResultStructured(map[string]any{"matches": lines}, sb.String()), nil
 }
 
 func (h *handlers) index(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
