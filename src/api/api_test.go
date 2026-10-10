@@ -238,6 +238,13 @@ func TestUI(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.True(t, strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html"))
 	require.Contains(t, rec.Body.String(), "<title>chizu</title>")
+	require.Contains(t, rec.Body.String(), `href="ponkotsu.css"`)
+
+	rec = s.do(t, "GET", "/ponkotsu.css", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.True(t, strings.HasPrefix(rec.Header().Get("Content-Type"), "text/css"))
+	require.Contains(t, rec.Body.String(), "--color-c-primary:")
+	require.NotContains(t, rec.Body.String(), "@apply", "plain CSS, no tailwind")
 }
 
 func TestFiles(t *testing.T) {

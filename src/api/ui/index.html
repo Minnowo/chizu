@@ -4,94 +4,113 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>chizu</title>
+<script>
+  // Set the theme before first paint: saved choice, else the system's.
+  (() => {
+    let theme;
+    try { theme = localStorage.getItem("chizu-theme"); } catch {}
+    if (theme !== "light" && theme !== "dark") theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<link rel="stylesheet" href="ponkotsu.css">
 <style>
-  :root {
-    --bg: #fbfbfa; --fg: #1d1d1b; --muted: #6b6b66; --line: #e4e4e0;
-    --card: #ffffff; --accent: #3b5bdb; --mark: #ffe066; --mark-fg: #1d1d1b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161615; --fg: #e8e8e3; --muted: #9a9a93; --line: #2c2c2a;
-      --card: #1e1e1d; --accent: #8ea4ff; --mark: #6b5800; --mark-fg: #fff6cc;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+
+  /* The handful of tailwind layout classes ponkotsu markup uses. */
+  .flex { display: flex; }
+  .flex-col { flex-direction: column; }
+  .flex-wrap { flex-wrap: wrap; }
+  .flex-1 { flex: 1 1 0%; min-width: 0; }
+  .items-center { align-items: center; }
+  .items-end { align-items: flex-end; }
+  .items-baseline { align-items: baseline; }
+  .justify-end { justify-content: flex-end; }
+  .self-start { align-self: flex-start; }
+  .gap-1 { gap: 4px; }
+  .gap-2 { gap: 8px; }
+  .gap-4 { gap: 16px; }
+
+  /* chizu's own pieces. */
   main { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
-  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
-  header h1 { margin: 0; font-size: 22px; letter-spacing: .02em; }
-  header .info { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-  form { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-  .filters { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); }
-  input[type=text], select { font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-width: 0; }
-  .filters input[type=text], .filters select { padding: 4px 8px; }
-  #q { font-size: 17px; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 6px; padding: 8px 14px; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  #status { color: var(--muted); font-size: 13px; margin: 14px 0 8px; min-height: 1.5em; }
-  .result { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; }
-  .result .path { color: var(--accent); cursor: pointer; font-family: ui-monospace, monospace; font-size: 14px; overflow-wrap: anywhere; background: none; border: 0; padding: 0; text-align: left; }
-  .result .root { color: var(--muted); font-size: 12px; }
-  .lines { margin: 6px 0 0; font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .lines .n { color: var(--muted); display: inline-block; min-width: 3.5em; text-align: right; padding-right: .8em; user-select: none; }
-  .more { color: var(--muted); font-size: 12px; }
-  mark { background: var(--mark); color: var(--mark-fg); border-radius: 2px; }
-  dialog { width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); }
-  dialog::backdrop { background: rgba(0,0,0,.4); }
-  dialog .bar { position: sticky; top: 0; display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 8px 12px; background: var(--card); border-bottom: 1px solid var(--line); font-family: ui-monospace, monospace; font-size: 13px; }
-  dialog pre { margin: 0; padding: 12px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-left: auto; }
-  .tabs button { border: 0; border-radius: 0; padding: 4px 12px; font-size: 13px; }
-  .tabs button[aria-pressed=true] { background: var(--accent); color: #fff; }
-  .files { background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
-  .file { display: flex; align-items: baseline; gap: 12px; padding: 5px 14px; border-top: 1px solid var(--line); }
-  .file:first-child { border-top: 0; }
-  .file .path { flex: 1; min-width: 0; color: var(--accent); cursor: pointer; font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; background: none; border: 0; padding: 0; text-align: left; }
-  .file .size { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .group { padding: 6px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); background: var(--bg); overflow-wrap: anywhere; }
-  .group:first-child { border-top: 0; border-radius: 8px 8px 0 0; }
-  #more { margin-top: 10px; }
-  details { margin-top: 24px; color: var(--muted); font-size: 13px; }
-  details li { overflow-wrap: anywhere; }
-  details li button { font-size: 13px; color: var(--accent); background: none; border: 0; padding: 0; text-align: left; overflow-wrap: anywhere; }
+  .path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+  .field { min-width: 10rem; }
+  .lines { background: var(--color-c-surface-container-2); font-size: .875rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .lines .n { color: var(--color-c-on-surface-variant); display: inline-block; min-width: 3.5em; text-align: right; padding-right: .8em; user-select: none; }
+  mark { background: var(--color-c-tertiary-container); color: var(--color-c-on-tertiary-container); border-radius: var(--radius-sm); }
+  .error { color: var(--color-c-error); }
+  summary { cursor: pointer; }
+  dialog {
+    width: min(960px, calc(100vw - 32px)); max-height: calc(100vh - 64px);
+    border: 0; color: var(--color-c-on-surface);
+  }
+  dialog::backdrop { background: rgb(0 0 0 / .5); }
+  dialog pre { background: var(--color-c-surface-container-2); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>chizu</h1>
-    <span class="info" id="info"></span>
-    <span class="tabs">
-      <button type="button" data-view="search" aria-pressed="true">Search</button>
-      <button type="button" data-view="files" aria-pressed="false">Files</button>
-    </span>
+<main class="flex flex-col gap-4">
+  <header class="flex flex-wrap items-center gap-2">
+    <div class="flex-1 flex flex-col">
+      <h1>chizu</h1>
+      <small id="info" class="path"></small>
+    </div>
+    <nav class="flex gap-1" aria-label="View">
+      <button type="button" data-view="search" class="btn-primary" aria-pressed="true">Search</button>
+      <button type="button" data-view="files" class="btn-outlined" aria-pressed="false">Files</button>
+    </nav>
+    <button type="button" id="theme" aria-pressed="false">Light mode</button>
   </header>
 
-  <form id="form">
-    <input type="text" id="q" placeholder="Search…" autofocus autocomplete="off">
-    <button class="primary" type="submit" id="go">Search</button>
-    <div class="filters">
-      <label>dir <input type="text" id="dir" size="24" placeholder="any"></label>
-      <label>path <input type="text" id="path" size="12" placeholder="prefix"></label>
-      <label>ext <input type="text" id="ext" size="8" placeholder="md,txt"></label>
-      <label id="raw-label"><input type="checkbox" id="raw"> FTS5 syntax</label>
+  <form id="form" role="search" class="surface-1 flex flex-col gap-4">
+    <div class="flex items-end gap-2">
+      <label class="flex-1 flex flex-col gap-1">
+        <span id="q-caption">Query</span>
+        <input type="text" id="q" placeholder="Words, &quot;a phrase&quot;, or pre*" autofocus autocomplete="off">
+      </label>
+      <button class="btn-primary" type="submit" id="go">Search</button>
+    </div>
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="flex-1 field flex flex-col gap-1">
+        Directory
+        <input type="text" id="dir" placeholder="Any indexed directory">
+      </label>
+      <label class="flex-1 field flex flex-col gap-1">
+        Path prefix
+        <input type="text" id="path" placeholder="e.g. notes/">
+      </label>
+      <label class="flex-1 field flex flex-col gap-1">
+        Extensions
+        <input type="text" id="ext" placeholder="e.g. md,txt">
+      </label>
+      <label id="raw-label" class="flex items-center gap-2">
+        <input type="checkbox" id="raw"> FTS5 syntax
+      </label>
       <button type="button" id="reindex" hidden>Re-index</button>
     </div>
   </form>
 
-  <div id="status"></div>
-  <div id="results"></div>
-  <button type="button" id="more" hidden>Load more</button>
+  <small id="status" role="status" aria-live="polite"></small>
+  <div id="results" class="flex flex-col gap-2"></div>
+  <button type="button" id="more" class="self-start" hidden>Load more</button>
 
-  <details>
+  <details class="surface-1">
     <summary>Indexed directories</summary>
-    <ul id="roots"></ul>
+    <ul id="roots" class="flex flex-col gap-1"></ul>
   </details>
 </main>
 
-<dialog id="viewer">
-  <div class="bar"><span id="viewer-path"></span><button type="button" id="viewer-close">Close</button></div>
-  <pre id="viewer-body"></pre>
+<dialog id="viewer" class="surface-1" aria-labelledby="viewer-name">
+  <div class="flex flex-col gap-2">
+    <div class="flex items-center gap-2">
+      <div class="flex-1 flex flex-col">
+        <h2 id="viewer-name" class="path"></h2>
+        <small id="viewer-path" class="path"></small>
+      </div>
+      <button type="button" id="viewer-close">Close</button>
+    </div>
+    <pre id="viewer-body"></pre>
+  </div>
 </dialog>
 
 <script>
@@ -113,6 +132,39 @@ async function api(path, opts) {
   return body;
 }
 
+function setStatus(text, isError = false) {
+  $("status").textContent = text;
+  $("status").classList.toggle("error", isError);
+}
+
+// fileLink is a real link to the raw file (so middle-click works) that opens the viewer on a plain click.
+function fileLink(f, text) {
+  return el("a", {
+    className: "path", href: "/api/file?raw=1&id=" + f.file_id, textContent: text,
+    onclick: (e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      openFile(f);
+    },
+  });
+}
+
+/* ---- theme ---- */
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  $("theme").setAttribute("aria-pressed", theme === "light");
+}
+
+$("theme").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  applyTheme(next);
+  try { localStorage.setItem("chizu-theme", next); } catch {}
+});
+applyTheme(document.documentElement.dataset.theme);
+
+/* ---- views ---- */
+
 const PAGE = 200;
 let view = "search";
 let seq = 0; // drops responses to requests that have been superseded
@@ -125,13 +177,18 @@ function filterParams() {
 
 function setView(v) {
   view = v;
-  for (const b of document.querySelectorAll(".tabs button")) b.setAttribute("aria-pressed", b.dataset.view === v);
-  $("q").placeholder = v === "files" ? "Filter by path…" : "Search…";
+  for (const b of document.querySelectorAll("nav button")) {
+    const on = b.dataset.view === v;
+    b.className = on ? "btn-primary" : "btn-outlined";
+    b.setAttribute("aria-pressed", on);
+  }
+  $("q-caption").textContent = v === "files" ? "Filter by path" : "Query";
+  $("q").placeholder = v === "files" ? "Part of a file name or path" : 'Words, "a phrase", or pre*';
   $("go").textContent = v === "files" ? "List" : "Search";
   $("raw-label").hidden = v === "files";
   $("results").replaceChildren();
   $("more").hidden = true;
-  $("status").textContent = "";
+  setStatus("");
   run();
 }
 
@@ -139,12 +196,59 @@ function run() {
   if (view === "files") listFiles(false); else runSearch();
 }
 
+/* ---- search ---- */
+
+async function runSearch() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  const id = ++seq;
+
+  const params = filterParams();
+  params.set("q", q);
+  if ($("raw").checked) params.set("raw", "true");
+  history.replaceState(null, "", "?" + params);
+  params.set("lines", "5");
+  params.set("limit", "50");
+
+  setStatus("Searching…");
+  try {
+    const { results } = await api("/api/search?" + params);
+    if (id !== seq) return;
+    setStatus(results.length ? `${results.length} file${results.length === 1 ? "" : "s"}` : "No results");
+    $("results").replaceChildren(...results.map(renderResult));
+  } catch (err) {
+    if (id !== seq) return;
+    setStatus(err.message, true);
+    $("results").replaceChildren();
+  }
+}
+
+function renderResult(r) {
+  const lines = el("pre", { className: "lines" });
+  for (const l of r.lines || []) {
+    lines.append(el("div", {}, el("span", { className: "n", textContent: l.line }), ...segments(l.segments)));
+  }
+  if (!r.lines || !r.lines.length) lines.append(...segments(r.snippet));
+
+  const card = el("article", { className: "surface-1 flex flex-col gap-2" },
+    el("div", { className: "flex flex-wrap items-baseline gap-2" },
+      el("h4", { className: "flex-1" }, fileLink(r, r.path)),
+      el("small", { className: "path", textContent: r.root })),
+    lines);
+
+  const more = r.line_count - (r.lines || []).length;
+  if (more > 0) card.append(el("small", { textContent: `… ${more} more matching line${more === 1 ? "" : "s"}` }));
+  return card;
+}
+
+/* ---- file list ---- */
+
 async function listFiles(append) {
   const id = ++seq;
   const params = filterParams();
   const q = $("q").value.trim();
   if (q) params.set("q", q);
-  const offset = append ? $("results").querySelectorAll(".file").length : 0;
+  const offset = append ? $("results").querySelectorAll("li").length : 0;
 
   const state = new URLSearchParams(params);
   state.set("view", "files");
@@ -152,32 +256,33 @@ async function listFiles(append) {
 
   params.set("limit", PAGE);
   params.set("offset", offset);
-  if (!append) $("status").textContent = "Loading…";
+  if (!append) setStatus("Loading…");
   try {
     const { files, total } = await api("/api/files?" + params);
     if (id !== seq) return;
+    if (!append) $("results").replaceChildren();
 
-    let list = append && $("results").querySelector(".files");
-    if (!list) {
-      list = el("div", { className: "files" });
-      $("results").replaceChildren(list);
-    }
-    let lastRoot = list.dataset.root;
+    // One panel per indexed directory; a page may continue the last one.
+    let section = $("results").lastElementChild;
     for (const f of files) {
-      if (f.root !== lastRoot) list.append(el("div", { className: "group", textContent: lastRoot = f.root }));
-      list.append(el("div", { className: "file" },
-        el("button", { className: "path", type: "button", textContent: f.path, onclick: () => openFile(f) }),
-        el("span", { className: "size", textContent: formatSize(f.size) })));
+      if (!section || section.dataset.root !== f.root) {
+        section = el("section", { className: "surface-1 flex flex-col gap-2" },
+          el("h3", { className: "path", textContent: f.root }),
+          el("ul", { className: "flex flex-col gap-1" }));
+        section.dataset.root = f.root;
+        $("results").append(section);
+      }
+      section.querySelector("ul").append(el("li", { className: "flex items-baseline gap-2" },
+        el("span", { className: "flex-1" }, fileLink(f, f.path)),
+        el("small", { textContent: formatSize(f.size) })));
     }
-    list.dataset.root = lastRoot || "";
 
     const shown = offset + files.length;
-    $("status").textContent = total ? (shown < total ? `${shown} of ${total} files` : `${total} file${total === 1 ? "" : "s"}`) : "No files";
-    if (!total) $("results").replaceChildren();
+    setStatus(total ? (shown < total ? `${shown} of ${total} files` : `${total} file${total === 1 ? "" : "s"}`) : "No files");
     $("more").hidden = shown >= total;
   } catch (err) {
     if (id !== seq) return;
-    $("status").textContent = err.message;
+    setStatus(err.message, true);
     $("results").replaceChildren();
     $("more").hidden = true;
   }
@@ -189,55 +294,16 @@ function formatSize(n) {
   return (n / 1024 / 1024).toFixed(1) + " MB";
 }
 
-async function runSearch() {
-  const q = $("q").value.trim();
-  if (!q) return;
-  const id = ++seq;
+/* ---- viewer, roots, info ---- */
 
-  const params = filterParams();
-  params.set("q", q);
-  params.set("lines", "5");
-  params.set("limit", "50");
-  if ($("raw").checked) params.set("raw", "true");
-  history.replaceState(null, "", "?" + params);
-
-  $("status").textContent = "Searching…";
-  try {
-    const { results } = await api("/api/search?" + params);
-    if (id !== seq) return;
-    $("status").textContent = results.length ? `${results.length} file${results.length === 1 ? "" : "s"}` : "No results";
-    $("results").replaceChildren(...results.map(renderResult));
-  } catch (err) {
-    if (id !== seq) return;
-    $("status").textContent = err.message;
-    $("results").replaceChildren();
-  }
-}
-
-function renderResult(r) {
-  const lines = el("div", { className: "lines" });
-  for (const l of r.lines || []) {
-    lines.append(el("div", {}, el("span", { className: "n", textContent: l.line }), ...segments(l.segments)));
-  }
-  if (!r.lines || !r.lines.length) lines.append(...segments(r.snippet));
-
-  const card = el("div", { className: "result" },
-    el("button", { className: "path", type: "button", textContent: r.path, onclick: () => openFile(r) }),
-    " ", el("span", { className: "root", textContent: r.root }),
-    lines);
-
-  const more = r.line_count - (r.lines || []).length;
-  if (more > 0) card.append(el("div", { className: "more", textContent: `… ${more} more matching lines` }));
-  return card;
-}
-
-async function openFile(r) {
-  $("viewer-path").textContent = r.abs_path;
+async function openFile(f) {
+  $("viewer-name").textContent = f.path.split("/").pop();
+  $("viewer-path").textContent = f.abs_path;
   $("viewer-body").textContent = "Loading…";
   $("viewer").showModal();
   try {
-    const f = await api("/api/file?id=" + r.file_id);
-    $("viewer-body").textContent = f.content;
+    const file = await api("/api/file?id=" + f.file_id);
+    $("viewer-body").textContent = file.content;
   } catch (err) {
     $("viewer-body").textContent = err.message;
   }
@@ -246,11 +312,25 @@ async function openFile(r) {
 async function loadRoots() {
   try {
     const { roots } = await api("/api/roots");
-    $("roots").replaceChildren(...roots.map(r => el("li", {},
-      el("button", { type: "button", title: "List its files", textContent: r.path, onclick: () => { $("dir").value = r.path; $("q").value = ""; setView("files"); } }),
-      ` (${r.file_count} files)`)));
+    if (!roots.length) {
+      $("roots").replaceChildren(el("li", {}, el("small", { textContent: "Nothing is indexed yet. Run chizu index <dir>." })));
+      return;
+    }
+    $("roots").replaceChildren(...roots.map(r => el("li", { className: "flex flex-wrap items-baseline gap-2" },
+      el("a", {
+        className: "path", href: "?view=files&dir=" + encodeURIComponent(r.path), textContent: r.path,
+        title: "List its files",
+        onclick: (e) => {
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          e.preventDefault();
+          $("dir").value = r.path;
+          $("q").value = "";
+          setView("files");
+        },
+      }),
+      el("small", { textContent: `${r.file_count} file${r.file_count === 1 ? "" : "s"}` }))));
   } catch (err) {
-    $("roots").replaceChildren(el("li", { textContent: err.message }));
+    $("roots").replaceChildren(el("li", { className: "error", textContent: err.message }));
   }
 }
 
@@ -265,8 +345,11 @@ async function loadInfo() {
 }
 
 $("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
-for (const b of document.querySelectorAll(".tabs button")) b.addEventListener("click", () => setView(b.dataset.view));
+for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => setView(b.dataset.view));
 $("more").addEventListener("click", () => listFiles(true));
+$("viewer-close").addEventListener("click", () => $("viewer").close());
+$("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) $("viewer").close(); });
+
 let typing;
 for (const id of ["q", "dir", "path", "ext"]) {
   $(id).addEventListener("input", () => {
@@ -275,18 +358,21 @@ for (const id of ["q", "dir", "path", "ext"]) {
     typing = setTimeout(() => listFiles(false), 200);
   });
 }
-$("viewer-close").addEventListener("click", () => $("viewer").close());
+
 $("reindex").addEventListener("click", async () => {
-  $("status").textContent = "Re-indexing…";
+  $("reindex").disabled = true;
+  setStatus("Re-indexing…");
   try {
     const { stats, errors } = await api("/api/index", { method: "POST", body: "{}" });
     const sum = (k) => stats.reduce((n, s) => n + s[k], 0);
-    $("status").textContent = `Re-indexed: ${sum("added")} added, ${sum("updated")} updated, ${sum("removed")} removed` +
-      (errors.length ? ` · ${errors.join("; ")}` : "");
+    setStatus(`Re-indexed: ${sum("added")} added, ${sum("updated")} updated, ${sum("removed")} removed` +
+      (errors.length ? ` · ${errors.join("; ")}` : ""), errors.length > 0);
     loadRoots();
     if (view === "files") listFiles(false);
   } catch (err) {
-    $("status").textContent = err.message;
+    setStatus(err.message, true);
+  } finally {
+    $("reindex").disabled = false;
   }
 });
 

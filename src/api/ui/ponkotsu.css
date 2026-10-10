@@ -1,0 +1,454 @@
+/* ponkotsu-css translated to plain CSS for chizu (no tailwind, no build step).
+   Color tokens are copied from the generated ponkotsu.css; the tailwind
+   utilities are rewritten as ordinary classes. Cascade layers stand in for
+   tailwind's ordering: base < components < unlayered page styles. */
+@layer preflight, base, components;
+
+/* The parts of tailwind's preflight reset the base style relies on. */
+@layer preflight {
+    *, ::before, ::after { box-sizing: border-box; }
+    h1, h2, h3, h4, h5, h6, p, hr, ul, ol, dl, dd, figure, blockquote, pre { margin: 0; }
+    ul, ol { padding: 0; list-style: none; }
+    button { background: none; }
+}
+
+:root {
+    color-scheme: dark;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+
+    --color-c-primary: #dcc496;
+    --color-c-on-primary: #402d00;
+    --color-c-primary-container: #6e5c36;
+    --color-c-on-primary-container: #ffffff;
+    --color-c-secondary: #a7caec;
+    --color-c-on-secondary: #003351;
+    --color-c-secondary-container: #3f627f;
+    --color-c-on-secondary-container: #ffffff;
+    --color-c-tertiary: #e1b6fd;
+    --color-c-on-tertiary: #4c007b;
+    --color-c-tertiary-container: #734f8e;
+    --color-c-on-tertiary-container: #ffffff;
+    --color-c-error: #edbca4;
+    --color-c-on-error: #522305;
+    --color-c-error-container: #7b5642;
+    --color-c-on-error-container: #ffffff;
+    --color-c-success: #b7cdb0;
+    --color-c-on-success: #153714;
+    --color-c-success-container: #51634c;
+    --color-c-on-success-container: #ffffff;
+    --color-c-surface: #2a2724;
+    --color-c-on-surface: #e8e1db;
+    --color-c-on-surface-variant: #cec5b9;
+    --color-c-surface-container-1: #35322e;
+    --color-c-surface-container-2: #403d39;
+    --color-c-surface-container-3: #4c4944;
+    --color-c-surface-container-4: #585450;
+    --color-c-surface-container-5: #64605b;
+    --color-c-surface-container-6: #706c67;
+    --color-c-surface-dim: #2a2724;
+    --color-c-surface-bright: #534f4b;
+    --color-c-outline: #b2aa9f;
+    --color-c-outline-variant: #645e54;
+    --color-c-inverse-surface: #ffffff;
+    --color-c-inverse-on-surface: #4a4642;
+    --color-c-inverse-primary: #91732c;
+    --color-c-pink: #d89dbd;
+    --color-c-on-pink: #330c26;
+    --color-c-d-pink: #ba84b8;
+    --color-c-on-d-pink: #320836;
+    --color-c-l-pink: #e8bad1;
+    --color-c-on-l-pink: #2e1223;
+    --color-c-red: #e29e7b;
+    --color-c-on-red: #341100;
+    --color-c-d-red: #d2806f;
+    --color-c-on-d-red: #3a0a03;
+    --color-c-l-red: #f1bb9f;
+    --color-c-on-l-red: #301404;
+    --color-c-yellow: #c2ad67;
+    --color-c-on-yellow: #231b00;
+    --color-c-d-yellow: #bb8e41;
+    --color-c-on-d-yellow: #281900;
+    --color-c-l-yellow: #d7c690;
+    --color-c-on-l-yellow: #231b00;
+    --color-c-green: #91b889;
+    --color-c-on-green: #012203;
+    --color-c-d-green: #859f5a;
+    --color-c-on-d-green: #121f00;
+    --color-c-l-green: #b2ceaa;
+    --color-c-on-l-green: #0a2009;
+    --color-c-blue: #84b4d2;
+    --color-c-on-blue: #001e2d;
+    --color-c-d-blue: #52a0b7;
+    --color-c-on-d-blue: #001f27;
+    --color-c-l-blue: #abcbe1;
+    --color-c-on-l-blue: #001e2d;
+    --color-c-primary-hover: #c8b083;
+    --color-c-primary-focus: #b49d71;
+    --color-c-secondary-hover: #92b6d8;
+    --color-c-secondary-focus: #7ea3c5;
+    --color-c-tertiary-hover: #cea2ed;
+    --color-c-tertiary-focus: #ba8ddd;
+    --color-c-error-hover: #d9a890;
+    --color-c-error-focus: #c6957c;
+    --color-c-success-hover: #a2ba9b;
+    --color-c-success-focus: #8da687;
+    --color-c-surface-container-1-hover: #484440;
+    --color-c-surface-container-1-focus: #5c5853;
+    --color-c-primary-hover-tint: #dcc4961f;
+    --color-c-primary-focus-tint: #dcc4963d;
+    --color-c-secondary-hover-tint: #a7caec1f;
+    --color-c-secondary-focus-tint: #a7caec3d;
+    --color-c-tertiary-hover-tint: #e1b6fd1f;
+    --color-c-tertiary-focus-tint: #e1b6fd3d;
+    --color-c-error-hover-tint: #edbca41f;
+    --color-c-error-focus-tint: #edbca43d;
+    --color-c-success-hover-tint: #b7cdb01f;
+    --color-c-success-focus-tint: #b7cdb03d;
+    --color-c-on-surface-hover-tint: #e8e1db1f;
+    --color-c-on-surface-focus-tint: #e8e1db3d;
+}
+
+:root[data-theme='light'] {
+    color-scheme: light;
+
+    --color-c-primary: #6e5c36;
+    --color-c-on-primary: #fff2de;
+    --color-c-primary-container: #dcc496;
+    --color-c-on-primary-container: #000000;
+    --color-c-secondary: #3f627f;
+    --color-c-on-secondary: #ecf4ff;
+    --color-c-secondary-container: #a7caec;
+    --color-c-on-secondary-container: #000000;
+    --color-c-tertiary: #734f8e;
+    --color-c-on-tertiary: #fdefff;
+    --color-c-tertiary-container: #e1b6fd;
+    --color-c-on-tertiary-container: #000000;
+    --color-c-error: #7b5642;
+    --color-c-on-error: #fff1eb;
+    --color-c-error-container: #edbca4;
+    --color-c-on-error-container: #000000;
+    --color-c-success: #51634c;
+    --color-c-on-success: #d5ffcb;
+    --color-c-success-container: #b7cdb0;
+    --color-c-on-success-container: #000000;
+    --color-c-surface: #e2dcd6;
+    --color-c-on-surface: #1e1b18;
+    --color-c-on-surface-variant: #4b463d;
+    --color-c-surface-container-1: #d4cec8;
+    --color-c-surface-container-2: #c6c0ba;
+    --color-c-surface-container-3: #b8b2ad;
+    --color-c-surface-container-4: #aaa59f;
+    --color-c-surface-container-5: #9d9892;
+    --color-c-surface-container-6: #8f8b85;
+    --color-c-surface-dim: #c3bdb7;
+    --color-c-surface-bright: #e2dcd6;
+    --color-c-outline: #645e54;
+    --color-c-outline-variant: #b2aa9f;
+    --color-c-inverse-surface: #1e1b18;
+    --color-c-inverse-on-surface: #dad3cd;
+    --color-c-inverse-primary: #caa75a;
+    --color-c-pink: #8f4d75;
+    --color-c-on-pink: #ffc3e3;
+    --color-c-d-pink: #6c2e6f;
+    --color-c-on-d-pink: #ffc0fb;
+    --color-c-l-pink: #ce95b4;
+    --color-c-on-l-pink: #26031b;
+    --color-c-red: #965129;
+    --color-c-on-red: #ffc9ae;
+    --color-c-d-red: #7c2d1c;
+    --color-c-on-d-red: #ffc8bc;
+    --color-c-l-red: #d89775;
+    --color-c-on-l-red: #230900;
+    --color-c-yellow: #776102;
+    --color-c-on-yellow: #f0d370;
+    --color-c-d-yellow: #604100;
+    --color-c-on-d-yellow: #ffcc7a;
+    --color-c-l-yellow: #b9a561;
+    --color-c-on-l-yellow: #161000;
+    --color-c-green: #3d6e39;
+    --color-c-on-green: #abe3a1;
+    --color-c-d-green: #344e00;
+    --color-c-on-d-green: #bce17d;
+    --color-c-l-green: #8ab083;
+    --color-c-on-l-green: #001501;
+    --color-c-blue: #0f6a90;
+    --color-c-on-blue: #a3dcff;
+    --color-c-d-blue: #004e5e;
+    --color-c-on-d-blue: #7ee2ff;
+    --color-c-l-blue: #7eacc8;
+    --color-c-on-l-blue: #00131e;
+    --color-c-primary-hover: #7e6d49;
+    --color-c-primary-focus: #8f7e5c;
+    --color-c-secondary-hover: #53728e;
+    --color-c-secondary-focus: #66839d;
+    --color-c-tertiary-hover: #82619b;
+    --color-c-tertiary-focus: #9274a9;
+    --color-c-error-hover: #8a6755;
+    --color-c-error-focus: #9a7968;
+    --color-c-success-hover: #60745a;
+    --color-c-success-focus: #6f8668;
+    --color-c-surface-container-1-hover: #bcb6b0;
+    --color-c-surface-container-1-focus: #a49e99;
+    --color-c-primary-hover-tint: #6e5c361f;
+    --color-c-primary-focus-tint: #6e5c363d;
+    --color-c-secondary-hover-tint: #3f627f1f;
+    --color-c-secondary-focus-tint: #3f627f3d;
+    --color-c-tertiary-hover-tint: #734f8e1f;
+    --color-c-tertiary-focus-tint: #734f8e3d;
+    --color-c-error-hover-tint: #7b56421f;
+    --color-c-error-focus-tint: #7b56423d;
+    --color-c-success-hover-tint: #51634c1f;
+    --color-c-success-focus-tint: #51634c3d;
+    --color-c-on-surface-hover-tint: #1e1b181f;
+    --color-c-on-surface-focus-tint: #1e1b183d;
+}
+
+@layer base {
+    html {
+        -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+        margin: 0;
+        color: var(--color-c-on-surface);
+        background-color: var(--color-c-surface);
+        font-family: system-ui, sans-serif;
+        line-height: 1.5;
+    }
+
+    h1, h2, h3, h4, h5, h6 { color: var(--color-c-on-surface); }
+    h1 { font-size: 1.75rem; line-height: 2.25rem; font-weight: 425; }
+    h2 { font-size: 1.375rem; line-height: 1.75rem; font-weight: 425; }
+    h3 { font-size: 1.125rem; line-height: 1.5rem; font-weight: 500; }
+    h4, h5, h6 { font-size: 1rem; line-height: 1.5rem; font-weight: 500; }
+
+    strong, b { font-weight: 500; }
+
+    small {
+        color: var(--color-c-on-surface-variant);
+        font-size: .875rem;
+        line-height: 1.25rem;
+    }
+
+    a {
+        color: var(--color-c-primary);
+        text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
+
+    hr {
+        border: none;
+        border-top: 1px solid var(--color-c-outline-variant);
+    }
+
+    code, pre {
+        font-family: ui-monospace, monospace;
+        background: var(--color-c-surface-container-1);
+        border-radius: var(--radius-sm);
+    }
+    code { padding: .125rem .25rem; }
+    pre { padding: .75rem; overflow-x: auto; }
+    pre code { background: transparent; padding: 0; }
+
+    table { border-collapse: collapse; width: 100%; }
+    th, td {
+        border: 1px solid var(--color-c-outline-variant);
+        padding: .25rem .5rem;
+        text-align: left;
+    }
+    th { background: var(--color-c-surface-container-2); font-weight: 500; }
+
+    fieldset {
+        border: 1px solid var(--color-c-outline-variant);
+        border-radius: var(--radius-md);
+        min-width: 0;
+        margin: 0;
+        padding: .75rem;
+    }
+    legend {
+        color: var(--color-c-on-surface-variant);
+        padding: 0 .25rem;
+        font-size: .875rem;
+        line-height: 1.25rem;
+    }
+
+    /* A caption doesn't forward clicks/hover to its field; the field itself does. */
+    label {
+        color: var(--color-c-on-surface-variant);
+        pointer-events: none;
+        font-size: .875rem;
+        line-height: 1.25rem;
+    }
+    label > * { pointer-events: auto; }
+    label:has(> input[type='checkbox'], > input[type='radio']) {
+        color: var(--color-c-on-surface);
+        pointer-events: auto;
+        font-size: 1rem;
+        line-height: 1.5rem;
+    }
+
+    input, select, textarea, button { font-family: inherit; }
+
+    input, select, textarea, button, .input-like {
+        color: var(--color-c-on-surface);
+        font-size: 1rem;
+        line-height: 1.5rem;
+        font-weight: 400;
+        background-color: var(--color-c-surface-container-1);
+        border-radius: var(--radius-sm);
+        padding: .25rem .5rem;
+        border: 1px solid var(--color-c-outline);
+        outline: none;
+    }
+    :is(input, select, textarea, button, .input-like):not(:disabled, [aria-disabled='true']):hover {
+        background-color: var(--color-c-surface-container-1-hover);
+    }
+    :is(input, select, textarea, .input-like):not(:disabled, [aria-disabled='true']):is(:focus, :focus-within) {
+        border-color: var(--color-c-primary);
+        box-shadow: inset 0 0 0 1px var(--color-c-primary);
+    }
+    :is(input, select, textarea, button, .input-like):disabled,
+    :is(input, select, textarea, button, .input-like)[aria-disabled='true'] {
+        background-color: var(--color-c-surface-container-2);
+        color: var(--color-c-on-surface-variant);
+        border-color: var(--color-c-outline-variant);
+        cursor: not-allowed;
+        opacity: .6;
+    }
+    :is(input, select, textarea, button, .input-like)[aria-disabled='true'] { pointer-events: none; }
+
+    /* Fields default to a ~20 character width (the size attribute), which stops
+       their containers shrinking on narrow screens. A real width replaces it. */
+    input, select, textarea { min-width: 0; }
+    label > input, label > select, label > textarea { width: 100%; box-sizing: border-box; }
+
+    button {
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    button:enabled:hover { cursor: pointer; }
+    button:not(:disabled, [aria-disabled='true']):is(:focus, :focus-within) {
+        border-color: var(--color-c-outline);
+        box-shadow: none;
+    }
+    /* :hover:active so this outranks the shared :hover rule above, which also
+       matches while the mouse is held down. */
+    button:not(:disabled, [aria-disabled='true']):active,
+    button:not(:disabled, [aria-disabled='true']):hover:active {
+        background-color: var(--color-c-surface-container-1-focus);
+    }
+
+    input[type='checkbox'], input[type='radio'], input[type='range'], input[type='color'] {
+        all: revert;
+        pointer-events: auto;
+        accent-color: var(--color-c-primary);
+    }
+    :is(input[type='checkbox'], input[type='radio'], input[type='range'], input[type='color']):hover { cursor: pointer; }
+    :is(input[type='checkbox'], input[type='radio'], input[type='range'], input[type='color']):disabled {
+        cursor: not-allowed;
+        opacity: .6;
+    }
+
+    /* std-focus */
+    :focus-visible {
+        outline: 2px solid var(--color-c-primary);
+        outline-offset: 2px;
+    }
+    /* Text fields show focus with their border instead; buttons, checkboxes,
+       radios, ranges and color pickers keep the ring. */
+    :is(input:not([type='checkbox'], [type='radio'], [type='range'], [type='color']), select, textarea, .input-like):focus-visible {
+        outline: none;
+    }
+
+    ::selection {
+        background: var(--color-c-primary);
+        color: var(--color-c-on-primary);
+    }
+}
+
+@layer components {
+    /* input-like on a wrapper (a composite field): the wrapper draws hover/focus,
+       the fields inside stay flat. */
+    .input-like :is(input, select, textarea, .input-like) {
+        background-color: transparent !important;
+        box-shadow: none !important;
+    }
+
+    /* surface-N backs onto surface-container-N; the page itself is plain surface. */
+    .surface-1, .surface-2, .surface-3, .surface-4, .surface-5, .surface-6 {
+        color: var(--color-c-on-surface);
+        border-radius: var(--radius-md);
+        padding: .75rem;
+    }
+    .surface-1 { background: var(--color-c-surface-container-1); }
+    .surface-2 { background: var(--color-c-surface-container-2); }
+    .surface-3 { background: var(--color-c-surface-container-3); }
+    .surface-4 { background: var(--color-c-surface-container-4); }
+    .surface-5 { background: var(--color-c-surface-container-5); }
+    .surface-6 { background: var(--color-c-surface-container-6); }
+
+    /* Opt-in border: on its own for a box flush with the page, or added to a surface-N. */
+    .surface-border {
+        color: var(--color-c-on-surface);
+        border: 1px solid var(--color-c-outline-variant);
+        border-radius: var(--radius-md);
+        padding: .75rem;
+    }
+
+    .btn-primary, .btn-secondary, .btn-tertiary, .btn-error, .btn-success {
+        padding: .25rem .75rem;
+        border-radius: .25rem;
+        font-weight: 500;
+        border: none;
+    }
+    .btn-outlined, .btn-outlined-primary, .btn-outlined-secondary, .btn-outlined-tertiary, .btn-outlined-error, .btn-outlined-success {
+        padding: .25rem .75rem;
+        border-radius: .25rem;
+        font-weight: 500;
+        background: transparent;
+        border: 1px solid var(--color-c-outline);
+        color: var(--color-c-on-surface);
+    }
+    :is([class*='btn-']):disabled { opacity: .38; cursor: not-allowed; }
+
+    .btn-primary { background: var(--color-c-primary); color: var(--color-c-on-primary); }
+    .btn-primary:enabled:hover { background: var(--color-c-primary-hover); }
+    .btn-primary:enabled:active { background: var(--color-c-primary-focus); }
+    .btn-secondary { background: var(--color-c-secondary); color: var(--color-c-on-secondary); }
+    .btn-secondary:enabled:hover { background: var(--color-c-secondary-hover); }
+    .btn-secondary:enabled:active { background: var(--color-c-secondary-focus); }
+    .btn-tertiary { background: var(--color-c-tertiary); color: var(--color-c-on-tertiary); }
+    .btn-tertiary:enabled:hover { background: var(--color-c-tertiary-hover); }
+    .btn-tertiary:enabled:active { background: var(--color-c-tertiary-focus); }
+    .btn-error { background: var(--color-c-error); color: var(--color-c-on-error); }
+    .btn-error:enabled:hover { background: var(--color-c-error-hover); }
+    .btn-error:enabled:active { background: var(--color-c-error-focus); }
+    .btn-success { background: var(--color-c-success); color: var(--color-c-on-success); }
+    .btn-success:enabled:hover { background: var(--color-c-success-hover); }
+    .btn-success:enabled:active { background: var(--color-c-success-focus); }
+
+    .btn-outlined:enabled:hover { background: var(--color-c-on-surface-hover-tint); }
+    .btn-outlined:enabled:active { background: var(--color-c-on-surface-focus-tint); }
+    .btn-outlined-primary { border-color: var(--color-c-primary); color: var(--color-c-primary); }
+    .btn-outlined-primary:enabled:hover { background: var(--color-c-primary-hover-tint); }
+    .btn-outlined-primary:enabled:active { background: var(--color-c-primary-focus-tint); }
+    .btn-outlined-secondary { border-color: var(--color-c-secondary); color: var(--color-c-secondary); }
+    .btn-outlined-secondary:enabled:hover { background: var(--color-c-secondary-hover-tint); }
+    .btn-outlined-secondary:enabled:active { background: var(--color-c-secondary-focus-tint); }
+    .btn-outlined-tertiary { border-color: var(--color-c-tertiary); color: var(--color-c-tertiary); }
+    .btn-outlined-tertiary:enabled:hover { background: var(--color-c-tertiary-hover-tint); }
+    .btn-outlined-tertiary:enabled:active { background: var(--color-c-tertiary-focus-tint); }
+    .btn-outlined-error { border-color: var(--color-c-error); color: var(--color-c-error); }
+    .btn-outlined-error:enabled:hover { background: var(--color-c-error-hover-tint); }
+    .btn-outlined-error:enabled:active { background: var(--color-c-error-focus-tint); }
+    .btn-outlined-success { border-color: var(--color-c-success); color: var(--color-c-success); }
+    .btn-outlined-success:enabled:hover { background: var(--color-c-success-hover-tint); }
+    .btn-outlined-success:enabled:active { background: var(--color-c-success-focus-tint); }
+
+    /* Visually hidden but read by screen readers. */
+    .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+}

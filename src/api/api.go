@@ -20,7 +20,7 @@ import (
 	"github.com/rs/zerolog"
 )
 
-//go:embed ui/index.html
+//go:embed ui/index.html ui/ponkotsu.css
 var ui embed.FS
 
 type Config struct {
@@ -46,6 +46,7 @@ func New(cfg Config) chi.Router {
 	r.Use(s.logRequests)
 
 	r.Get("/", s.handleUI)
+	r.Get("/ponkotsu.css", s.handleCSS)
 
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/info", s.handleInfo)
@@ -114,6 +115,16 @@ func (s *server) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(data)
+}
+
+func (s *server) handleCSS(w http.ResponseWriter, r *http.Request) {
+	data, err := ui.ReadFile("ui/ponkotsu.css")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Write(data)
 }
 
