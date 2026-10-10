@@ -439,10 +439,17 @@ func TestMCPStdio(t *testing.T) {
 	// Every stdout line is a JSON-RPC message; logs must not leak into it.
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	require.Len(t, lines, 2, out.String())
+	// mcp-go answers requests concurrently, so replies can arrive in any order.
+	replies := map[int]string{}
 	for _, l := range lines {
-		require.True(t, json.Valid([]byte(l)), l)
+		var msg struct {
+			ID int `json:"id"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(l), &msg), l)
+		replies[msg.ID] = l
 	}
-	require.Contains(t, lines[1], "tuesday.md")
+	require.Contains(t, replies[1], `"serverInfo"`)
+	require.Contains(t, replies[2], "tuesday.md")
 }
 
 func TestServeHandlerMountsAPIAndMCP(t *testing.T) {
