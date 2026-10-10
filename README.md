@@ -10,6 +10,8 @@ chizu serve                  # http://127.0.0.1:7070 (UI, /api/*, /mcp)
 chizu mcp                    # MCP over stdio
 ```
 
+![A photo of the chizu web ui](./img/web_ui.png)
+
 ## Database
 
 The index lives in `.chizu.sqlite`. Without `--db` (or `CHIZU_DB`), chizu
