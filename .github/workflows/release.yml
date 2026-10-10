@@ -1,0 +1,95 @@
+name: release
+
+# Push a tag to build every target and publish a GitHub release:
+#   git tag v1.0.0 && git push origin v1.0.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make test-all
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: linux,   goarch: arm, goarm: '7', name: armv7 }
+          - { goos: linux,   goarch: '386' }
+          - { goos: linux,   goarch: riscv64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+          - { goos: openbsd, goarch: amd64 }
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      PKG: chizu-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.name || matrix.goarch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Pure Go driver (modernc.org/sqlite), so every target cross-compiles
+      # to a static binary without a C toolchain.
+      - name: build
+        run: |
+          exe=chizu
+          [ "$GOOS" = windows ] && exe=chizu.exe
+          make build VERSION=${{ github.ref_name }} BIN="$PKG/$exe"
+          cp README.md LICENSE "$PKG/"
+
+      - name: package
+        run: |
+          if [ "$GOOS" = windows ]; then
+            zip -r "$PKG.zip" "$PKG"
+          else
+            tar -czf "$PKG.tar.gz" "$PKG"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PKG }}
+          path: ${{ env.PKG }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} dist/* \
+            --repo ${{ github.repository }} \
+            --title ${{ github.ref_name }} \
+            --generate-notes \
+            --verify-tag
