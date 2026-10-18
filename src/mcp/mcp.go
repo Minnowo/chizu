@@ -24,7 +24,13 @@ import (
 const instructions = `chizu is a full text index of local directories.
 Use search to find files by content (results include matching line numbers),
 then read_file to read a file or a range of its lines. list_roots shows which
-directories are indexed and list_files lists the files in them.`
+directories are indexed and list_files lists the files in them. Set max_tokens
+to cap a response.`
+
+// maxTokensOption is the max_tokens argument shared by tools that can return a lot.
+func maxTokensOption() gomcp.ToolOption {
+	return gomcp.WithNumber("max_tokens", gomcp.Description("approximate cap on the response size in tokens; results that do not fit are trimmed, shown as paths only, or dropped, and a note says so"))
+}
 
 // defaultListLimit keeps list_files from flooding the model's context.
 const defaultListLimit = 200
@@ -65,6 +71,7 @@ Set raw=true for SQLite FTS5 syntax: AND, OR, NOT, NEAR(a b, 5), path:term.`),
 		gomcp.WithNumber("limit", gomcp.Description(fmt.Sprintf("max files (default %d)", search.DefaultLimit))),
 		gomcp.WithNumber("offset", gomcp.Description("skip this many files, for paging")),
 		gomcp.WithNumber("max_lines", gomcp.Description(fmt.Sprintf("max matching lines per file (default %d)", search.DefaultMaxLines))),
+		maxTokensOption(),
 	), h.search)
 
 	s.AddTool(gomcp.NewTool("list_roots",
@@ -93,6 +100,7 @@ With query, return only the lines that match it (all of them, uncropped, prefixe
 		gomcp.WithNumber("end_line", gomcp.Description("last line to return (inclusive)")),
 		gomcp.WithString("query", gomcp.Description("only return lines matching this search, same syntax as the search tool")),
 		gomcp.WithBoolean("raw", gomcp.Description("treat query as FTS5 syntax")),
+		gomcp.WithNumber("max_tokens", gomcp.Description("approximate cap on the response size in tokens; a longer file is cut at a line boundary and the note says where to continue")),
 	), h.readFile)
 
 	if !cfg.ReadOnly {
@@ -153,32 +161,18 @@ func (h *handlers) search(ctx context.Context, req gomcp.CallToolRequest) (*gomc
 		return gomcp.NewToolResultStructured(map[string]any{"results": results}, "No results."), nil
 	}
 
-	var sb strings.Builder
-	for i, r := range results {
-		if i > 0 {
-			sb.WriteString("\n")
-		}
-		fmt.Fprintf(&sb, "%s (file_id %d)\n", r.AbsPath, r.FileID)
-		for _, l := range r.Lines {
-			fmt.Fprintf(&sb, "%d: %s\n", l.Number, plain(l.Segments))
-		}
-		if len(r.Lines) == 0 {
-			fmt.Fprintf(&sb, "%s\n", plain(r.Snippet))
-		}
-		if more := r.LineCount - len(r.Lines); more > 0 {
-			fmt.Fprintf(&sb, "… %d more matching lines\n", more)
-		}
-	}
+	results, budget := search.FitResults(results, req.GetInt("max_tokens", 0))
+	text := withNote(search.FormatResults(results), budget.Note())
 
-	return gomcp.NewToolResultStructured(map[string]any{"results": results}, sb.String()), nil
+	return gomcp.NewToolResultStructured(map[string]any{"results": results}, text), nil
 }
 
-func plain(segs []search.Segment) string {
-	var sb strings.Builder
-	for _, s := range segs {
-		sb.WriteString(s.Text)
+// withNote appends note, if any, on its own line.
+func withNote(text, note string) string {
+	if note == "" {
+		return text
 	}
-	return sb.String()
+	return text + "\n" + note
 }
 
 func (h *handlers) listRoots(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
@@ -263,17 +257,39 @@ func (h *handlers) readFile(ctx context.Context, req gomcp.CallToolRequest) (*go
 	}
 
 	content := f.Content
+	maxTokens := req.GetInt("max_tokens", 0)
 
-	if start > 0 || end > 0 {
-		lines := strings.Split(content, "\n")
-		start = max(start, 1)
-		if end <= 0 || end > len(lines) {
-			end = len(lines)
+	if start <= 0 && end <= 0 && (maxTokens <= 0 || search.EstimateTokens(content) <= maxTokens) {
+		return gomcp.NewToolResultText(content), nil
+	}
+
+	lines := strings.Split(content, "\n")
+	start = max(start, 1)
+	if end <= 0 || end > len(lines) {
+		end = len(lines)
+	}
+	if start > end {
+		return gomcp.NewToolResultError("start_line is past the end of the file (" + strconv.Itoa(len(lines)) + " lines)"), nil
+	}
+
+	if maxTokens <= 0 {
+		return gomcp.NewToolResultText(strings.Join(lines[start-1:end], "\n")), nil
+	}
+
+	// Keep whole lines while they fit, always at least one.
+	used, last := 0, start-1
+	for last < end {
+		c := search.EstimateTokens(lines[last]) + 1
+		if used+c > maxTokens && last >= start {
+			break
 		}
-		if start > end {
-			return gomcp.NewToolResultError("start_line is past the end of the file (" + strconv.Itoa(len(lines)) + " lines)"), nil
-		}
-		content = strings.Join(lines[start-1:end], "\n")
+		used += c
+		last++
+	}
+
+	content = strings.Join(lines[start-1:last], "\n")
+	if last < end {
+		content += fmt.Sprintf("\n[token budget of %d reached at line %d of %d; continue with start_line=%d]", maxTokens, last, len(lines), last+1)
 	}
 
 	return gomcp.NewToolResultText(content), nil
@@ -300,7 +316,7 @@ func (h *handlers) matchingLines(ctx context.Context, f database.File, query str
 
 	var sb strings.Builder
 	for _, l := range lines {
-		fmt.Fprintf(&sb, "%d: %s\n", l.Number, plain(l.Segments))
+		fmt.Fprintf(&sb, "%d: %s\n", l.Number, search.PlainText(l.Segments))
 	}
 	if len(lines) == 1 {
 		sb.WriteString("1 matching line")

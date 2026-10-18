@@ -47,6 +47,7 @@ SQLite FTS5 unchanged, allowing AND, OR, NOT, NEAR() and column filters.`,
 			&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Value: search.DefaultLimit, Usage: "max files"},
 			&cli.IntFlag{Name: "offset", Usage: "skip this many files"},
 			&cli.IntFlag{Name: "lines", Value: search.DefaultMaxLines, Usage: "max matching lines shown per file"},
+			maxTokensFlag(),
 			colorFlag(),
 			jsonFlag(),
 		},
@@ -80,6 +81,10 @@ func runSearch(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	// Exit as if nothing matched only if nothing did, not if nothing fit the budget.
+	found := len(results)
+	results, budget := search.FitResults(results, cmd.Int("max-tokens"))
+
 	w := cmd.Root().Writer
 
 	if cmd.Bool("json") {
@@ -89,11 +94,28 @@ func runSearch(ctx context.Context, cmd *cli.Command) error {
 	} else {
 		printResults(w, results, useColor(cmd, w))
 	}
+	printNote(cmd, budget)
 
-	if len(results) == 0 {
+	if found == 0 {
 		return ErrNoResults
 	}
 	return nil
+}
+
+func maxTokensFlag() cli.Flag {
+	return &cli.IntFlag{Name: "max-tokens", Usage: "cut the output to about `N` tokens (for piping into a model)"}
+}
+
+// printNote tells the reader a token budget cut the output: after the
+// output, or on stderr when the output is JSON.
+func printNote(cmd *cli.Command, b search.Budget) {
+	if note := b.Note(); note != "" {
+		w := cmd.Root().Writer
+		if cmd.Bool("json") {
+			w = cmd.Root().ErrWriter
+		}
+		fmt.Fprintln(w, note)
+	}
 }
 
 func colorFlag() cli.Flag {
@@ -151,7 +173,10 @@ func printResults(w io.Writer, results []search.Result, color bool) {
 
 		printLines(w, r.Lines, color)
 
-		if more := r.LineCount - len(r.Lines); more > 0 {
+		switch more := r.LineCount - len(r.Lines); {
+		case more > 0 && len(r.Lines) == 0:
+			fmt.Fprintf(w, "… %d matching lines\n", more)
+		case more > 0:
 			fmt.Fprintf(w, "… %d more matching lines\n", more)
 		}
 	}

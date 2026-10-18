@@ -534,6 +534,23 @@ func TestIndexReportsEachDirectoryClearly(t *testing.T) {
 	require.Contains(t, out.stdout, "indexed "+dir+" in ")
 }
 
+func TestSearchMaxTokens(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "search", "--db", db, "--max-tokens", "1000", "heron")
+	require.NotContains(t, out.stdout, "token budget")
+
+	out = mustRun(t, "search", "--db", db, "--max-tokens", "1", "heron")
+	require.Equal(t, "[token budget of 1 reached: 2 dropped; narrow the query or raise max_tokens]\n", out.stdout)
+
+	// With --json the note goes to stderr so stdout stays valid JSON.
+	out = mustRun(t, "search", "--db", db, "--json", "--max-tokens", "1", "heron")
+	require.Equal(t, "[]\n", out.stdout)
+	require.Contains(t, out.stderr, "token budget of 1 reached")
+}
+
 // syncBuffer is a bytes.Buffer safe to write from one goroutine and read from another.
 type syncBuffer struct {
 	mu  sync.Mutex

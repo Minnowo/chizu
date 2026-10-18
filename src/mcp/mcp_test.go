@@ -13,6 +13,7 @@ import (
 
 	"chizu/src/database"
 	"chizu/src/indexer"
+	"chizu/src/search"
 
 	"github.com/mark3labs/mcp-go/client"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
@@ -266,4 +267,32 @@ func TestReadFileToolWithQuery(t *testing.T) {
 
 	res = f.call(t, "read_file", map[string]any{"path": path, "query": "foo AND (", "raw": true})
 	require.True(t, res.IsError)
+}
+
+func TestSearchToolMaxTokens(t *testing.T) {
+	f := newFixture(t, false)
+
+	full := text(t, f.call(t, "search", map[string]any{"query": "heron"}))
+	require.NotContains(t, full, "token budget")
+
+	res := f.call(t, "search", map[string]any{"query": "heron", "max_tokens": 1})
+	require.False(t, res.IsError, text(t, res))
+	require.Equal(t, "\n[token budget of 1 reached: 2 dropped; narrow the query or raise max_tokens]", text(t, res))
+
+	res = f.call(t, "search", map[string]any{"query": "heron", "max_tokens": search.EstimateTokens(full)})
+	require.Equal(t, full, text(t, res), "a budget the results fit in changes nothing")
+}
+
+func TestReadFileToolMaxTokens(t *testing.T) {
+	f := newFixture(t, false)
+	path := filepath.Join(f.dir, "monday.md")
+
+	out := text(t, f.call(t, "read_file", map[string]any{"path": path, "max_tokens": 1000}))
+	require.Equal(t, "# Monday\nSaw a heron.\nline three\nline four", out)
+
+	out = text(t, f.call(t, "read_file", map[string]any{"path": path, "max_tokens": 7}))
+	require.Equal(t, "# Monday\nSaw a heron.\n[token budget of 7 reached at line 2 of 4; continue with start_line=3]", out)
+
+	out = text(t, f.call(t, "read_file", map[string]any{"path": path, "start_line": 3, "max_tokens": 1}))
+	require.Equal(t, "line three\n[token budget of 1 reached at line 3 of 4; continue with start_line=4]", out, "at least one line")
 }

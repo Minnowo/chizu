@@ -40,7 +40,7 @@ The tokenizer is chosen when a database is created:
 | `init [dir]` | write a `.chizuignore` with the default rules |
 | `index [dir...]` | index dirs; with no args, re-index every indexed dir |
 | `watch [dir...]` | index dirs, then re-index them as files change; with no args, every indexed dir |
-| `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--json`) |
+| `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--max-tokens`, `--json`) |
 | `roots` | list indexed dirs |
 | `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--ids`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
@@ -108,6 +108,11 @@ unless `--read-only`. For Claude Code:
 ```sh
 claude mcp add chizu -- chizu mcp --db /path/to/.chizu.sqlite
 ```
+
+When using `--max-tokens`, `search` and `read_file` cap how much of a model's
+context a response uses (estimated at 4 bytes a token). Search results that
+do not fit lose matching lines first, then keep only their path, best
+matches first.
 
 ## Building
 
