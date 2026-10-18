@@ -21,40 +21,46 @@ jobs:
 
   build:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # tree-sitter's parsers are C, so builds need a C compiler for the
+        # target: zig cross-compiles Linux (static, musl) and Windows, and
+        # macOS builds on a macOS runner. The BSDs are left out: the
+        # go-tree-sitter binding does not build there (v0.25.0 limits its
+        # Unix code to linux || darwin) and zig cannot link for OpenBSD.
         include:
-          - { goos: linux,   goarch: amd64 }
-          - { goos: linux,   goarch: arm64 }
-          - { goos: linux,   goarch: arm, goarm: '7', name: armv7 }
-          - { goos: linux,   goarch: '386' }
-          - { goos: linux,   goarch: riscv64 }
-          - { goos: darwin,  goarch: amd64 }
-          - { goos: darwin,  goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
-          - { goos: windows, goarch: arm64 }
-          - { goos: freebsd, goarch: amd64 }
-          - { goos: freebsd, goarch: arm64 }
-          - { goos: openbsd, goarch: amd64 }
+          - { os: ubuntu-latest, goos: linux,   goarch: amd64,   cc: zig cc -target x86_64-linux-musl, static: true }
+          - { os: ubuntu-latest, goos: linux,   goarch: arm64,   cc: zig cc -target aarch64-linux-musl, static: true }
+          - { os: ubuntu-latest, goos: linux,   goarch: arm,     cc: zig cc -target arm-linux-musleabihf, static: true, goarm: '7', name: armv7 }
+          - { os: ubuntu-latest, goos: linux,   goarch: '386',   cc: zig cc -target x86-linux-musl, static: true }
+          - { os: ubuntu-latest, goos: linux,   goarch: riscv64, cc: zig cc -target riscv64-linux-musl, static: true }
+          - { os: ubuntu-latest, goos: windows, goarch: amd64,   cc: zig cc -target x86_64-windows-gnu }
+          - { os: ubuntu-latest, goos: windows, goarch: arm64,   cc: zig cc -target aarch64-windows-gnu }
+          - { os: macos-latest,  goos: darwin,  goarch: arm64,   cc: clang }
+          - { os: macos-latest,  goos: darwin,  goarch: amd64,   cc: clang -arch x86_64 }
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       GOARM: ${{ matrix.goarm }}
+      CC: ${{ matrix.cc }}
+      STATIC: ${{ matrix.static && '-linkmode external -extldflags "-static"' || '' }}
       PKG: chizu-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.name || matrix.goarch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - if: startsWith(matrix.cc, 'zig')
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
-      # Pure Go driver (modernc.org/sqlite), so every target cross-compiles
-      # to a static binary without a C toolchain.
       - name: build
         run: |
           exe=chizu
           [ "$GOOS" = windows ] && exe=chizu.exe
-          make build VERSION=${{ github.ref_name }} BIN="$PKG/$exe"
+          make build VERSION=${{ github.ref_name }} BIN="$PKG/$exe" STATIC="$STATIC"
           cp README.md LICENSE "$PKG/"
 
       - name: package

@@ -34,15 +34,34 @@ type File struct {
 	ModTime  int64  `db:"mtime" json:"mtime"`
 	Hash     string `db:"hash" json:"hash"`
 	Content  string `db:"content" json:"content"`
+	// SymbolsVersion is the symbols.Version that produced Symbols.
+	SymbolsVersion int `db:"symbols_version" json:"-"`
+	// Symbols are written with the file by UpsertFiles; they are not loaded by GetFile.
+	Symbols []Symbol `db:"-" json:"-"`
+}
+
+// Symbol is a definition (function, type, method, ...) found in a file.
+type Symbol struct {
+	FileID int64  `db:"file_id" json:"file_id"`
+	Name   string `db:"name" json:"name"`
+	Kind   string `db:"kind" json:"kind"`
+	// Parent is the enclosing definition, or the receiver type of a method.
+	Parent string `db:"parent" json:"parent,omitempty"`
+	// Line and EndLine are the 1-based lines the definition spans.
+	Line    int `db:"line" json:"line"`
+	EndLine int `db:"end_line" json:"end_line"`
+	// Signature is the line the definition's name is on, trimmed.
+	Signature string `db:"signature" json:"signature"`
 }
 
 // FileState is what the indexer needs to decide whether a file changed.
 type FileState struct {
-	ID      int64  `db:"id"`
-	Path    string `db:"path"`
-	Size    int64  `db:"size"`
-	ModTime int64  `db:"mtime"`
-	Hash    string `db:"hash"`
+	ID             int64  `db:"id"`
+	Path           string `db:"path"`
+	Size           int64  `db:"size"`
+	ModTime        int64  `db:"mtime"`
+	Hash           string `db:"hash"`
+	SymbolsVersion int    `db:"symbols_version"`
 }
 
 func notFound(err error) error {
@@ -92,21 +111,13 @@ func (s *Store) DeleteRoot(ctx context.Context, id int64) error {
 	return err
 }
 
-// UpsertFile inserts or replaces the file at (RootID, Path) and returns its id.
+// UpsertFile inserts or replaces the file at (RootID, Path), and its symbols, and returns its id.
 func (s *Store) UpsertFile(ctx context.Context, f File) (int64, error) {
-	var id int64
-	err := sqlx.GetContext(ctx, s.q, &id, `
-		INSERT INTO files (root_id, path, ext, size, mtime, hash, content)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (root_id, path) DO UPDATE SET
-			ext = excluded.ext, size = excluded.size, mtime = excluded.mtime,
-			hash = excluded.hash, content = excluded.content
-		RETURNING id`,
-		f.RootID, f.Path, f.Ext, f.Size, f.ModTime, f.Hash, f.Content)
+	ids, err := s.UpsertFiles(ctx, []File{f})
 	if err != nil {
-		return 0, fmt.Errorf("upsert file %s: %w", f.Path, err)
+		return 0, err
 	}
-	return id, nil
+	return ids[f.Path], nil
 }
 
 // batchRows is how many rows go in one statement. FTS5 flushes its pending
@@ -114,8 +125,11 @@ func (s *Store) UpsertFile(ctx context.Context, f File) (int64, error) {
 // file is very slow; this keeps well under SQLite's variable limit.
 const batchRows = 500
 
-// UpsertFiles inserts or replaces many files using as few statements as possible.
-func (s *Store) UpsertFiles(ctx context.Context, files []File) error {
+// UpsertFiles inserts or replaces many files, and their symbols, using as
+// few statements as possible. It returns the files' ids by path.
+func (s *Store) UpsertFiles(ctx context.Context, files []File) (map[string]int64, error) {
+
+	ids := make(map[string]int64, len(files))
 
 	for len(files) > 0 {
 		n := min(len(files), batchRows)
@@ -123,23 +137,98 @@ func (s *Store) UpsertFiles(ctx context.Context, files []File) error {
 		files = files[n:]
 
 		var sb strings.Builder
-		args := make([]any, 0, len(chunk)*7)
+		args := make([]any, 0, len(chunk)*8)
 
-		sb.WriteString(`INSERT INTO files (root_id, path, ext, size, mtime, hash, content) VALUES `)
+		sb.WriteString(`INSERT INTO files (root_id, path, ext, size, mtime, hash, content, symbols_version) VALUES `)
 		for i, f := range chunk {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
-			sb.WriteString("(?, ?, ?, ?, ?, ?, ?)")
-			args = append(args, f.RootID, f.Path, f.Ext, f.Size, f.ModTime, f.Hash, f.Content)
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
+			args = append(args, f.RootID, f.Path, f.Ext, f.Size, f.ModTime, f.Hash, f.Content, f.SymbolsVersion)
 		}
 		sb.WriteString(`
 			ON CONFLICT (root_id, path) DO UPDATE SET
 				ext = excluded.ext, size = excluded.size, mtime = excluded.mtime,
-				hash = excluded.hash, content = excluded.content`)
+				hash = excluded.hash, content = excluded.content, symbols_version = excluded.symbols_version
+			RETURNING id, path`)
+
+		var rows []struct {
+			ID   int64  `db:"id"`
+			Path string `db:"path"`
+		}
+		if err := sqlx.SelectContext(ctx, s.q, &rows, sb.String(), args...); err != nil {
+			return nil, fmt.Errorf("upsert %d files: %w", len(chunk), err)
+		}
+
+		chunkIDs := make([]int64, 0, len(rows))
+		for _, r := range rows {
+			ids[r.Path] = r.ID
+			chunkIDs = append(chunkIDs, r.ID)
+		}
+
+		var syms []Symbol
+		for _, f := range chunk {
+			for _, sym := range f.Symbols {
+				sym.FileID = ids[f.Path]
+				syms = append(syms, sym)
+			}
+		}
+		if err := s.replaceSymbols(ctx, chunkIDs, syms); err != nil {
+			return nil, err
+		}
+	}
+
+	return ids, nil
+}
+
+// SetFileSymbols replaces the symbols of a file whose content did not
+// change, recording its new mtime and the symbols version.
+func (s *Store) SetFileSymbols(ctx context.Context, id, mtime int64, version int, syms []Symbol) error {
+
+	if _, err := s.q.ExecContext(ctx, `UPDATE files SET mtime = ?, symbols_version = ? WHERE id = ?`, mtime, version, id); err != nil {
+		return err
+	}
+
+	for i := range syms {
+		syms[i].FileID = id
+	}
+	return s.replaceSymbols(ctx, []int64{id}, syms)
+}
+
+// replaceSymbols deletes the symbols of the files in ids and inserts syms.
+func (s *Store) replaceSymbols(ctx context.Context, ids []int64, syms []Symbol) error {
+
+	if len(ids) > 0 {
+		args := make([]any, len(ids))
+		for i, id := range ids {
+			args[i] = id
+		}
+		q := `DELETE FROM symbols WHERE file_id IN (?` + strings.Repeat(", ?", len(ids)-1) + `)`
+		if _, err := s.q.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("delete symbols: %w", err)
+		}
+	}
+
+	for len(syms) > 0 {
+		n := min(len(syms), batchRows)
+		chunk := syms[:n]
+		syms = syms[n:]
+
+		var sb strings.Builder
+		args := make([]any, 0, len(chunk)*7)
+
+		sb.WriteString(`INSERT INTO symbols (file_id, name, kind, parent, line, end_line, signature) VALUES `)
+		for i, sym := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+			args = append(args, sym.FileID, sym.Name, sym.Kind, sym.Parent, sym.Line, sym.EndLine, sym.Signature)
+		}
 
 		if _, err := s.q.ExecContext(ctx, sb.String(), args...); err != nil {
-			return fmt.Errorf("upsert %d files: %w", len(chunk), err)
+			return fmt.Errorf("insert %d symbols: %w", len(chunk), err)
 		}
 	}
 
@@ -198,7 +287,7 @@ func (s *Store) GetFileByPath(ctx context.Context, rootID int64, path string) (F
 // FileStates returns the stored state of every file under a root, keyed by path.
 func (s *Store) FileStates(ctx context.Context, rootID int64) (map[string]FileState, error) {
 	var rows []FileState
-	err := sqlx.SelectContext(ctx, s.q, &rows, `SELECT id, path, size, mtime, hash FROM files WHERE root_id = ?`, rootID)
+	err := sqlx.SelectContext(ctx, s.q, &rows, `SELECT id, path, size, mtime, hash, symbols_version FROM files WHERE root_id = ?`, rootID)
 	if err != nil {
 		return nil, err
 	}

@@ -62,6 +62,26 @@ END;
 	// FTS5 flushes pending index data whenever it passes hashsize (1MB by
 	// default); a larger buffer makes bulk indexing ~15% faster.
 	`INSERT INTO files_fts (files_fts, rank) VALUES ('hashsize', 8388608);`,
+	// Definitions found by tree-sitter. symbols_version records which
+	// extractor produced a file's symbols, so files indexed before (or by an
+	// older chizu) are parsed again even though their content is unchanged.
+	`
+ALTER TABLE files ADD COLUMN symbols_version INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE symbols (
+	id        INTEGER PRIMARY KEY,
+	file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+	name      TEXT NOT NULL,
+	kind      TEXT NOT NULL,
+	parent    TEXT NOT NULL DEFAULT '',
+	line      INTEGER NOT NULL,
+	end_line  INTEGER NOT NULL,
+	signature TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX symbols_name ON symbols (name COLLATE NOCASE);
+CREATE INDEX symbols_file ON symbols (file_id);
+`,
 }
 
 // migrate brings the schema up to date and returns the database's tokenizer.

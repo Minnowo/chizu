@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -21,11 +22,14 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const instructions = `chizu is a full text index of local directories.
-Use search to find files by content (results include matching line numbers),
-then read_file to read a file or a range of its lines. list_roots shows which
-directories are indexed and list_files lists the files in them. Set max_tokens
-to cap a response.`
+const instructions = `chizu is a full text index of local directories, with the
+definitions in source files parsed out.
+Use find_definition when you know a function, type or method name: it returns
+where it is defined, and with body=true its source. Use search to find files by
+content (results include matching line numbers). Before reading a whole source
+file, file_outline lists its definitions with line ranges so read_file can
+fetch only the lines you need. list_roots shows which directories are indexed
+and list_files lists the files in them. Set max_tokens to cap a response.`
 
 // maxTokensOption is the max_tokens argument shared by tools that can return a lot.
 func maxTokensOption() gomcp.ToolOption {
@@ -73,6 +77,29 @@ Set raw=true for SQLite FTS5 syntax: AND, OR, NOT, NEAR(a b, 5), path:term.`),
 		gomcp.WithNumber("max_lines", gomcp.Description(fmt.Sprintf("max matching lines per file (default %d)", search.DefaultMaxLines))),
 		maxTokensOption(),
 	), h.search)
+
+	s.AddTool(gomcp.NewTool("find_definition",
+		gomcp.WithDescription(`Find where a function, method, type, class, etc. is defined, by name (case-insensitive).
+The name can be qualified by its parent, e.g. "Store.Open" or "Store::open". If no name matches exactly, names containing it are returned.
+Each result is path:line, the kind and the definition's first line; body=true includes its full source with line numbers.`),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithString("name", gomcp.Required(), gomcp.Description("symbol name, optionally Parent.Name")),
+		gomcp.WithBoolean("body", gomcp.Description("include each definition's source")),
+		gomcp.WithArray("kinds", gomcp.WithStringItems(), gomcp.Description(`only these kinds, e.g. ["function","method","class","struct","interface","type"]`)),
+		gomcp.WithString("dir", gomcp.Description("only search inside this absolute directory")),
+		gomcp.WithString("path_prefix", gomcp.Description("only files whose path relative to its indexed root starts with this")),
+		gomcp.WithArray("exts", gomcp.WithStringItems(), gomcp.Description(`only these file extensions, e.g. ["go","py"]`)),
+		gomcp.WithNumber("limit", gomcp.Description(fmt.Sprintf("max definitions (default %d)", search.DefaultDefLimit))),
+		gomcp.WithNumber("offset", gomcp.Description("skip this many definitions, for paging")),
+		maxTokensOption(),
+	), h.findDefinition)
+
+	s.AddTool(gomcp.NewTool("file_outline",
+		gomcp.WithDescription("List the definitions in an indexed source file (kind, name, line range), nested, without reading its content."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithString("path", gomcp.Description("absolute path of the file")),
+		gomcp.WithNumber("file_id", gomcp.Description("file id from search results")),
+	), h.fileOutline)
 
 	s.AddTool(gomcp.NewTool("list_roots",
 		gomcp.WithDescription("List the indexed directories."),
@@ -175,6 +202,94 @@ func withNote(text, note string) string {
 	return text + "\n" + note
 }
 
+func (h *handlers) findDefinition(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+
+	name, err := req.RequireString("name")
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+
+	defs, err := search.Definitions(ctx, h.DB, search.DefQuery{
+		Name:       name,
+		Kinds:      req.GetStringSlice("kinds", nil),
+		Dir:        req.GetString("dir", ""),
+		PathPrefix: req.GetString("path_prefix", ""),
+		Exts:       req.GetStringSlice("exts", nil),
+		Limit:      req.GetInt("limit", 0),
+		Offset:     req.GetInt("offset", 0),
+		Body:       req.GetBool("body", false),
+	})
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+
+	if len(defs) == 0 {
+		return gomcp.NewToolResultStructured(map[string]any{"definitions": defs},
+			"No definitions named "+name+". Try search, which also finds uses and names in files chizu does not parse."), nil
+	}
+
+	exact := defs[0].Exact
+	defs, budget := search.FitDefinitions(defs, req.GetInt("max_tokens", 0))
+	text := search.FormatDefinitions(defs)
+	if !exact {
+		text = "No exact match for " + name + "; names containing it:\n" + text
+	}
+
+	return gomcp.NewToolResultStructured(map[string]any{"definitions": defs}, withNote(text, budget.Note())), nil
+}
+
+func (h *handlers) fileOutline(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+
+	f, res := h.lookupFile(ctx, req)
+	if res != nil {
+		return res, nil
+	}
+
+	outline, err := search.Outline(ctx, h.DB, f.ID)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+
+	lines := strings.Count(f.Content, "\n") + 1
+	if len(outline) == 0 {
+		return gomcp.NewToolResultStructured(map[string]any{"symbols": outline},
+			fmt.Sprintf("No definitions found (%d lines). chizu only finds definitions in source files of the languages it can parse.", lines)), nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s (file_id %d, %d lines)\n", filepath.Join(f.RootPath, filepath.FromSlash(f.Path)), f.ID, lines)
+	for _, e := range outline {
+		fmt.Fprintf(&sb, "%s%d-%d %s %s\n", strings.Repeat("  ", e.Depth), e.Line, e.EndLine, e.Kind, e.Name)
+	}
+
+	return gomcp.NewToolResultStructured(map[string]any{"symbols": outline}, sb.String()), nil
+}
+
+// lookupFile finds the file named by the path or file_id argument, or returns an error result.
+func (h *handlers) lookupFile(ctx context.Context, req gomcp.CallToolRequest) (database.File, *gomcp.CallToolResult) {
+
+	var f database.File
+	var err error
+
+	switch {
+	case req.GetArguments()["file_id"] != nil:
+		f, err = search.GetFileByID(ctx, h.DB, int64(req.GetInt("file_id", 0)))
+	case req.GetString("path", "") != "":
+		f, err = search.GetFile(ctx, h.DB, req.GetString("path", ""))
+	default:
+		return f, gomcp.NewToolResultError("path or file_id is required")
+	}
+
+	if errors.Is(err, database.ErrNotFound) {
+		return f, gomcp.NewToolResultError("file is not in the index: " + err.Error())
+	}
+	if err != nil {
+		return f, gomcp.NewToolResultError(err.Error())
+	}
+
+	return f, nil
+}
+
 func (h *handlers) listRoots(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
 
 	roots, err := h.DB.ListRoots(ctx)
@@ -230,24 +345,9 @@ func (h *handlers) listFiles(ctx context.Context, req gomcp.CallToolRequest) (*g
 
 func (h *handlers) readFile(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
 
-	var f database.File
-	var err error
-
-	args := req.GetArguments()
-	switch {
-	case args["file_id"] != nil:
-		f, err = search.GetFileByID(ctx, h.DB, int64(req.GetInt("file_id", 0)))
-	case req.GetString("path", "") != "":
-		f, err = search.GetFile(ctx, h.DB, req.GetString("path", ""))
-	default:
-		return gomcp.NewToolResultError("path or file_id is required"), nil
-	}
-
-	if errors.Is(err, database.ErrNotFound) {
-		return gomcp.NewToolResultError("file is not in the index: " + err.Error()), nil
-	}
-	if err != nil {
-		return gomcp.NewToolResultError(err.Error()), nil
+	f, res := h.lookupFile(ctx, req)
+	if res != nil {
+		return res, nil
 	}
 
 	start, end := req.GetInt("start_line", 0), req.GetInt("end_line", 0)

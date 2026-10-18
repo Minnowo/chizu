@@ -62,7 +62,7 @@ func indexFlags() []cli.Flag {
 		&cli.StringSliceFlag{Name: "exclude", Aliases: []string{"x"}, Usage: "skip paths matching these gitignore-style `PATTERN`s"},
 		&cli.Int64Flag{Name: "max-size", Usage: "skip files larger than `BYTES` (default 10MiB)"},
 		&cli.BoolFlag{Name: "clear-filters", Usage: "forget the filters saved from earlier runs"},
-		&cli.IntFlag{Name: "workers", Aliases: []string{"j"}, Usage: "files read and hashed in parallel (default: number of CPUs)"},
+		&cli.IntFlag{Name: "workers", Aliases: []string{"j"}, Usage: "files read, hashed and parsed in parallel (default: number of CPUs)"},
 		&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "no progress output"},
 	}
 }

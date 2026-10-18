@@ -217,20 +217,25 @@ func TestUpsertFilesBatch(t *testing.T) {
 	root, err := db.UpsertRoot(ctx, "/r")
 	require.NoError(t, err)
 
-	require.NoError(t, db.UpsertFiles(ctx, nil))
+	_, err = db.UpsertFiles(ctx, nil)
+	require.NoError(t, err)
 
-	require.NoError(t, db.UpsertFiles(ctx, []File{
+	ids, err := db.UpsertFiles(ctx, []File{
 		{RootID: root.ID, Path: "a.md", Ext: "md", Size: 1, ModTime: 1, Hash: "ha", Content: "alpha"},
 		{RootID: root.ID, Path: "b.md", Ext: "md", Size: 2, ModTime: 2, Hash: "hb", Content: "beta"},
-	}))
+	})
+	require.NoError(t, err)
+	require.Len(t, ids, 2)
 	require.Equal(t, 1, matchCount(t, db, "alpha"))
 	require.Equal(t, 1, matchCount(t, db, "beta"))
 
 	// A batch mixing an update and an insert.
-	require.NoError(t, db.UpsertFiles(ctx, []File{
+	ids2, err := db.UpsertFiles(ctx, []File{
 		{RootID: root.ID, Path: "a.md", Ext: "md", Size: 3, ModTime: 3, Hash: "ha2", Content: "gamma"},
 		{RootID: root.ID, Path: "c.md", Ext: "md", Content: "delta"},
-	}))
+	})
+	require.NoError(t, err)
+	require.Equal(t, ids["a.md"], ids2["a.md"], "an update keeps the file's id")
 	require.Equal(t, 0, matchCount(t, db, "alpha"))
 	require.Equal(t, 1, matchCount(t, db, "gamma"))
 	require.Equal(t, 1, matchCount(t, db, "delta"))
@@ -252,7 +257,8 @@ func TestUpsertFilesLargeBatchIsChunked(t *testing.T) {
 	for i := range files {
 		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d.txt", i), Content: "common"}
 	}
-	require.NoError(t, db.UpsertFiles(ctx, files))
+	_, err = db.UpsertFiles(ctx, files)
+	require.NoError(t, err)
 	require.Equal(t, 5000, matchCount(t, db, "common"))
 }
 
@@ -266,7 +272,8 @@ func TestDeleteFiles(t *testing.T) {
 	for i := range files {
 		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d", i), Content: "word"}
 	}
-	require.NoError(t, db.UpsertFiles(ctx, files))
+	_, err = db.UpsertFiles(ctx, files)
+	require.NoError(t, err)
 
 	states, err := db.FileStates(ctx, root.ID)
 	require.NoError(t, err)
@@ -294,12 +301,13 @@ func TestListFiles(t *testing.T) {
 	require.NoError(t, err)
 	b, err := db.UpsertRoot(ctx, "/b")
 	require.NoError(t, err)
-	require.NoError(t, db.UpsertFiles(ctx, []File{
+	_, err = db.UpsertFiles(ctx, []File{
 		{RootID: a.ID, Path: "notes/z.md", Ext: "md", Size: 10, ModTime: 5, Content: "big content"},
 		{RootID: a.ID, Path: "notes/a.txt", Ext: "txt", Size: 3, Content: "x"},
 		{RootID: a.ID, Path: "100%_done.md", Ext: "md", Content: "x"},
 		{RootID: b.ID, Path: "Main.go", Ext: "go", Content: "x"},
-	}))
+	})
+	require.NoError(t, err)
 
 	all, total, err := db.ListFiles(ctx, ListParams{})
 	require.NoError(t, err)
@@ -350,7 +358,8 @@ func fillAndDelete(t *testing.T, db *DB, n, keep int) {
 	for i := range files {
 		files[i] = File{RootID: root.ID, Path: fmt.Sprintf("f%d", i), Content: strings.Repeat(fmt.Sprintf("word%d ", i), 1000)}
 	}
-	require.NoError(t, db.UpsertFiles(ctx, files))
+	_, err = db.UpsertFiles(ctx, files)
+	require.NoError(t, err)
 	states, err := db.FileStates(ctx, root.ID)
 	require.NoError(t, err)
 	var ids []int64

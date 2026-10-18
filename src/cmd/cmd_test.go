@@ -534,6 +534,73 @@ func TestIndexReportsEachDirectoryClearly(t *testing.T) {
 	require.Contains(t, out.stdout, "indexed "+dir+" in ")
 }
 
+// codeDir returns a resolved temp dir with a little source code in it.
+func codeDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	writeTree(t, dir, map[string]string{
+		"store/store.go": "package store\n\ntype Store struct{}\n\nfunc (s *Store) Open() error {\n\treturn nil\n}\n\nfunc Open() *Store {\n\treturn &Store{}\n}\n",
+		"app.py":         "class App:\n    def run(self):\n        pass\n",
+		"readme.md":      "Open the Store",
+	})
+	return dir
+}
+
+func TestDef(t *testing.T) {
+	dir := codeDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+	storeGo := filepath.Join(dir, "store", "store.go")
+
+	out := mustRun(t, "def", "--db", db, "open")
+	require.Contains(t, out.stdout, storeGo+":5 (id ")
+	require.Contains(t, out.stdout, ") method Store.Open\n  func (s *Store) Open() error {\n")
+	require.Contains(t, out.stdout, storeGo+":9 (id ")
+	require.Contains(t, out.stdout, ") function Open\n  func Open() *Store {\n")
+
+	out = mustRun(t, "def", "--db", db, "--body", "Store.Open")
+	require.Contains(t, out.stdout, ") method Store.Open\n5: func (s *Store) Open() error {\n6: \treturn nil\n7: }\n")
+	require.NotContains(t, out.stdout, "function Open")
+
+	out = mustRun(t, "def", "--db", db, "--kind", "function", "--json", "open")
+	var defs []search.Definition
+	require.NoError(t, json.Unmarshal([]byte(out.stdout), &defs))
+	require.Len(t, defs, 1)
+	require.Equal(t, 9, defs[0].Line)
+
+	out = mustRun(t, "def", "--db", db, "--ext", "py", "ru")
+	require.Equal(t, "no exact match; names containing it:\n", out.stdout[:strings.Index(out.stdout, "\n")+1])
+	require.Contains(t, out.stdout, "method App.run")
+
+	out = mustRun(t, "def", "--db", db, "--body", "--max-tokens", "60", "open")
+	require.Contains(t, out.stdout, "[token budget of 60 reached")
+
+	_, err := run(t, "def", "--db", db, "zebra")
+	require.ErrorIs(t, err, ErrNoResults)
+	_, err = run(t, "def", "--db", db)
+	require.Error(t, err)
+}
+
+func TestOutline(t *testing.T) {
+	dir := codeDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+	mustRun(t, "index", "--db", db, dir)
+
+	out := mustRun(t, "outline", "--db", db, filepath.Join(dir, "app.py"))
+	require.Contains(t, out.stdout, "app.py (id ")
+	require.Contains(t, out.stdout, ", 4 lines)\n  1-3 class App\n    2-3 method run\n")
+
+	out = mustRun(t, "outline", "--db", db, "--json", filepath.Join(dir, "store", "store.go"))
+	var entries []search.OutlineEntry
+	require.NoError(t, json.Unmarshal([]byte(out.stdout), &entries))
+	require.Len(t, entries, 3)
+	require.Equal(t, "Store", entries[1].Parent)
+
+	_, err := run(t, "outline", "--db", db, filepath.Join(dir, "readme.md"))
+	require.ErrorIs(t, err, ErrNoResults)
+}
+
 func TestSearchMaxTokens(t *testing.T) {
 	dir := notesDir(t)
 	db := filepath.Join(t.TempDir(), "x.sqlite")

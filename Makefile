@@ -2,20 +2,25 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X chizu/src/version.Version=$(VERSION)
 BIN     := bin/chizu
 
+# tree-sitter's parsers are C, so every build uses cgo. On Linux the binary
+# is linked statically; netgo and osusergo avoid glibc's dlopen/NSS so that
+# works. Set STATIC= to link dynamically (macOS cannot link statically).
+STATIC  ?= $(if $(filter Linux,$(shell uname -s)),-linkmode external -extldflags "-static")
+TAGS    := netgo osusergo
+
 .PHONY: build build-cgo test test-cgo test-all fmt vet clean
 
-# Static pure-Go binary (modernc.org/sqlite).
+# Pure Go SQLite driver (modernc.org/sqlite).
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' -o $(BIN) .
+	CGO_ENABLED=1 go build -trimpath -tags '$(TAGS)' -ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN) .
 
-# Static cgo binary (mattn/go-sqlite3). sqlite_fts5 selects the mattn driver
-# and compiles in FTS5; the rest avoid glibc dlopen/NSS for a static link.
+# cgo SQLite driver (mattn/go-sqlite3). sqlite_fts5 selects it and compiles in FTS5.
 build-cgo:
-	CGO_ENABLED=1 go build -trimpath -tags 'sqlite_fts5 sqlite_omit_load_extension netgo osusergo' \
-		-ldflags '$(LDFLAGS) -linkmode external -extldflags "-static"' -o $(BIN)-cgo .
+	CGO_ENABLED=1 go build -trimpath -tags '$(TAGS) sqlite_fts5 sqlite_omit_load_extension' \
+		-ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN)-cgo .
 
 test:
-	CGO_ENABLED=0 go test ./...
+	CGO_ENABLED=1 go test ./...
 
 test-cgo:
 	CGO_ENABLED=1 go test -tags sqlite_fts5 ./...

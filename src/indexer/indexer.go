@@ -21,6 +21,7 @@ import (
 
 	"chizu/src/database"
 	"chizu/src/ignore"
+	"chizu/src/symbols"
 
 	"github.com/rs/zerolog"
 )
@@ -148,7 +149,8 @@ func ResolveRoot(dir string) (string, error) {
 
 // Index brings the index for dir up to date. Unchanged files (same size and
 // mtime, or same content hash) are not rewritten, and files that are gone or
-// no longer pass the filters are removed.
+// no longer pass the filters are removed. Source files are parsed for their
+// definitions; see package symbols.
 func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stats, error) {
 
 	root, err := ResolveRoot(dir)
@@ -319,6 +321,7 @@ type result struct {
 	skipped bool
 	data    []byte
 	hash    string
+	symbols []database.Symbol
 }
 
 // walk sends files needing a read to jobs. Files that are unchanged or too
@@ -385,7 +388,7 @@ func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, 
 		old, known := existing[rel]
 		j := job{path: path, rel: rel, ext: ext, info: info, old: old, known: known}
 
-		if known && old.Size == info.Size() && old.ModTime == info.ModTime().UnixNano() {
+		if known && old.Size == info.Size() && old.ModTime == info.ModTime().UnixNano() && old.SymbolsVersion == symbols.Version {
 			return send(result{job: j, unchanged: true})
 		}
 
@@ -468,7 +471,8 @@ func Dirs(ctx context.Context, db *database.DB, dir string, log zerolog.Logger) 
 	return dirs, err
 }
 
-// process reads, sniffs and hashes one file.
+// process reads, sniffs and hashes one file, and finds its symbols unless
+// they are already stored for the same content.
 func process(j job, maxSize int64, log zerolog.Logger) result {
 
 	data, err := readText(j.path)
@@ -485,7 +489,19 @@ func process(j job, maxSize int64, log zerolog.Logger) result {
 	}
 
 	sum := sha256.Sum256(data)
-	return result{job: j, data: data, hash: hex.EncodeToString(sum[:])}
+	r := result{job: j, data: data, hash: hex.EncodeToString(sum[:])}
+
+	if j.known && j.old.Hash == r.hash && j.old.SymbolsVersion == symbols.Version {
+		return r
+	}
+
+	syms, err := symbols.Extract(j.path, data)
+	if err != nil {
+		log.Debug().Err(err).Str("path", j.rel).Msg("cannot parse")
+	}
+	r.symbols = syms
+
+	return r
 }
 
 // Batches are written when they reach this many files or bytes.
@@ -516,6 +532,9 @@ func (w *writer) add(ctx context.Context, r result) error {
 
 	if r.known && r.old.Hash == r.hash {
 		w.stats.Unchanged++
+		if r.old.SymbolsVersion != symbols.Version {
+			return w.s.SetFileSymbols(ctx, r.old.ID, mtime, symbols.Version, r.symbols)
+		}
 		return w.s.TouchFile(ctx, r.old.ID, mtime)
 	}
 
@@ -535,6 +554,9 @@ func (w *writer) add(ctx context.Context, r result) error {
 		ModTime: mtime,
 		Hash:    r.hash,
 		Content: string(r.data),
+
+		SymbolsVersion: symbols.Version,
+		Symbols:        r.symbols,
 	})
 	w.batchSz += len(r.data)
 
@@ -545,7 +567,7 @@ func (w *writer) add(ctx context.Context, r result) error {
 }
 
 func (w *writer) flush(ctx context.Context) error {
-	err := w.s.UpsertFiles(ctx, w.batch)
+	_, err := w.s.UpsertFiles(ctx, w.batch)
 	w.batch, w.batchSz = w.batch[:0], 0
 	return err
 }

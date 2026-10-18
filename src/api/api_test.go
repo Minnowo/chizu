@@ -33,7 +33,7 @@ func newServer(t *testing.T, readOnly bool) *testServer {
 	for p, c := range map[string]string{
 		"monday.md":    "# Monday\nSaw a heron.",
 		"tuesday.md":   "# Tuesday\nRained all day.",
-		"code/main.go": "package main // heron",
+		"code/main.go": "package main // heron\n\ntype Store struct{}\n\nfunc (s *Store) Open() error {\n\treturn nil\n}\n",
 	} {
 		full := filepath.Join(dir, p)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
@@ -304,5 +304,48 @@ func TestFileWithQueryReturnsMatchingLines(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), `"matches"`)
 
 	rec = s.do(t, "GET", "/api/file?path="+abs+"&fts=true&q="+url.QueryEscape("foo AND ("), nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+type defResponse struct {
+	Definitions []search.Definition `json:"definitions"`
+}
+
+func TestDef(t *testing.T) {
+	s := newServer(t, false)
+
+	rec := s.do(t, "GET", "/api/def?name=store.open&body=1", nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	defs := decode[defResponse](t, rec).Definitions
+	require.Len(t, defs, 1)
+	require.Equal(t, search.Definition{
+		FileID: defs[0].FileID, Root: s.dir, Path: "code/main.go", AbsPath: filepath.Join(s.dir, "code", "main.go"),
+		Name: "Open", Kind: "method", Parent: "Store", Line: 5, EndLine: 7,
+		Signature: "func (s *Store) Open() error {", Exact: true,
+		Body: []string{"func (s *Store) Open() error {", "\treturn nil", "}"},
+	}, defs[0])
+
+	rec = s.do(t, "GET", "/api/def?name=store&kind=function", nil)
+	require.Empty(t, decode[defResponse](t, rec).Definitions)
+
+	rec = s.do(t, "GET", "/api/def?name=", nil)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestOutline(t *testing.T) {
+	s := newServer(t, false)
+
+	rec := s.do(t, "GET", "/api/outline?path="+url.QueryEscape(filepath.Join(s.dir, "code", "main.go")), nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	resp := decode[struct {
+		Symbols []search.OutlineEntry `json:"symbols"`
+	}](t, rec)
+	require.Len(t, resp.Symbols, 2)
+	require.Equal(t, "Store", resp.Symbols[0].Name)
+	require.Equal(t, "Open", resp.Symbols[1].Name)
+
+	rec = s.do(t, "GET", "/api/outline?id=999", nil)
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	rec = s.do(t, "GET", "/api/outline", nil)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }

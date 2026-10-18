@@ -54,6 +54,8 @@ func New(cfg Config) chi.Router {
 		r.Get("/roots", s.handleRoots)
 		r.Get("/files", s.handleFiles)
 		r.Get("/file", s.handleFile)
+		r.Get("/def", s.handleDef)
+		r.Get("/outline", s.handleOutline)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireWritable)
@@ -231,7 +233,8 @@ func (s *server) handleFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
+// lookupFile finds the file named by the id or path parameter, writing an error if it cannot.
+func (s *server) lookupFile(w http.ResponseWriter, r *http.Request) (database.File, bool) {
 
 	var f database.File
 	var err error
@@ -241,18 +244,27 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 		id, perr := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 		if perr != nil {
 			writeError(w, http.StatusBadRequest, errors.New("invalid id"))
-			return
+			return f, false
 		}
 		f, err = search.GetFileByID(r.Context(), s.DB, id)
 	case r.URL.Query().Get("path") != "":
 		f, err = search.GetFile(r.Context(), s.DB, r.URL.Query().Get("path"))
 	default:
 		writeError(w, http.StatusBadRequest, errors.New("id or path is required"))
-		return
+		return f, false
 	}
 
 	if err != nil {
 		writeError(w, statusFor(err), err)
+		return f, false
+	}
+	return f, true
+}
+
+func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
+
+	f, ok := s.lookupFile(w, r)
+	if !ok {
 		return
 	}
 
@@ -278,6 +290,50 @@ func (s *server) handleFile(w http.ResponseWriter, r *http.Request) {
 		database.File
 		Matches []search.Line `json:"matches"`
 	}{f, matches})
+}
+
+func (s *server) handleDef(w http.ResponseWriter, r *http.Request) {
+
+	q := search.DefQuery{
+		Name:       r.URL.Query().Get("name"),
+		Kinds:      listParam(r, "kind"),
+		Dir:        r.URL.Query().Get("dir"),
+		PathPrefix: r.URL.Query().Get("path"),
+		Exts:       listParam(r, "ext"),
+		Body:       boolParam(r, "body"),
+	}
+
+	var err error
+	for name, dst := range map[string]*int{"limit": &q.Limit, "offset": &q.Offset} {
+		if *dst, err = intParam(r, name); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+
+	defs, err := search.Definitions(r.Context(), s.DB, q)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"definitions": defs})
+}
+
+func (s *server) handleOutline(w http.ResponseWriter, r *http.Request) {
+
+	f, ok := s.lookupFile(w, r)
+	if !ok {
+		return
+	}
+
+	outline, err := search.Outline(r.Context(), s.DB, f.ID)
+	if err != nil {
+		writeError(w, statusFor(err), err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"symbols": outline})
 }
 
 type indexRequest struct {

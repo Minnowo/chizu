@@ -75,3 +75,21 @@ func TestFitResults(t *testing.T) {
 	require.Contains(t, FormatResults(out), "/r/f2.txt (file_id 2)\n… 1 matching lines\n")
 	require.Len(t, results[0].Lines, 2, "the input is not modified")
 }
+
+func TestFitDefinitions(t *testing.T) {
+	defs := []Definition{
+		{FileID: 1, AbsPath: "/r/a.go", Name: "A", Kind: "function", Line: 3, EndLine: 5, Signature: "func A() {",
+			Body: []string{"func A() {", strings.Repeat("x", 400), "}"}},
+		{FileID: 2, AbsPath: "/r/b.go", Name: "B", Kind: "function", Line: 1, EndLine: 1, Signature: "func B() {}",
+			Body: []string{"func B() {}"}},
+	}
+
+	out, b := FitDefinitions(defs, 80)
+	require.Len(t, out, 2)
+	require.Equal(t, []string{"func A() {"}, out[0].Body)
+	require.Equal(t, 1, b.Trimmed)
+
+	text := FormatDefinitions(out)
+	require.Contains(t, text, "/r/a.go:3 (file_id 1) function A (lines 3-5)\n3: func A() {\n… 2 more lines (read_file start_line=4)\n")
+	require.Contains(t, text, "/r/b.go:1 (file_id 2) function B\n1: func B() {}\n")
+}

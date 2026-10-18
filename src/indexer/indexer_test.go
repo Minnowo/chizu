@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"chizu/src/database"
+	"chizu/src/symbols"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -494,6 +495,100 @@ func TestIndexTruncatesWALWhileAnotherProcessHasItOpen(t *testing.T) {
 	st, err := os.Stat(path + "-wal")
 	if err == nil {
 		require.Zero(t, st.Size(), "WAL is truncated after indexing")
+	}
+}
+
+// symbolNames returns "kind name" for each symbol stored for a file.
+func symbolNames(t *testing.T, db *database.DB, root, path string) []string {
+	t.Helper()
+	r, err := db.GetRoot(t.Context(), root)
+	require.NoError(t, err)
+	f, err := db.GetFileByPath(t.Context(), r.ID, path)
+	require.NoError(t, err)
+	syms, err := db.FileSymbols(t.Context(), f.ID)
+	require.NoError(t, err)
+	names := []string{}
+	for _, s := range syms {
+		names = append(names, s.Kind+" "+s.Name)
+	}
+	return names
+}
+
+func symbolCount(t *testing.T, db *database.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, db.GetContext(t.Context(), &n, `SELECT count(*) FROM symbols`))
+	return n
+}
+
+func TestIndexSymbols(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	dir := t.TempDir()
+
+	writeTree(t, dir, map[string]string{
+		"main.go":   "package main\n\nfunc main() {}\n\nfunc helper() {}\n",
+		"lib.py":    "class Thing:\n    def run(self):\n        pass\n",
+		"readme.md": "# func notCode()",
+	})
+
+	stats, err := Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"function main", "function helper"}, symbolNames(t, db, stats.Root, "main.go"))
+	require.Equal(t, []string{"class Thing", "method run"}, symbolNames(t, db, stats.Root, "lib.py"))
+	require.Empty(t, symbolNames(t, db, stats.Root, "readme.md"))
+
+	// A changed file's symbols are replaced.
+	writeTree(t, dir, map[string]string{"main.go": "package main\n\nfunc main() {}\n\ntype Config struct{}\n"})
+	bumpMtime(t, filepath.Join(dir, "main.go"))
+	_, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"function main", "struct Config"}, symbolNames(t, db, stats.Root, "main.go"))
+
+	// Touching a file without changing it keeps its symbols.
+	bumpMtime(t, filepath.Join(dir, "lib.py"))
+	stats, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 3, stats.Unchanged)
+	require.Equal(t, []string{"class Thing", "method run"}, symbolNames(t, db, stats.Root, "lib.py"))
+
+	// A removed file's symbols go with it.
+	require.NoError(t, os.Remove(filepath.Join(dir, "lib.py")))
+	_, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 2, symbolCount(t, db))
+
+	require.NoError(t, Remove(ctx, db, dir))
+	require.Zero(t, symbolCount(t, db))
+}
+
+func TestIndexFillsInSymbolsForOldFiles(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	dir := t.TempDir()
+	writeTree(t, dir, map[string]string{"main.go": "package main\n\nfunc main() {}\n", "a.txt": "text"})
+
+	stats, err := Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+
+	// As if indexed by a chizu that did not parse symbols.
+	_, err = db.ExecContext(ctx, `DELETE FROM symbols`)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE files SET symbols_version = 0`)
+	require.NoError(t, err)
+
+	stats, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Unchanged, "content is not rewritten")
+	require.Zero(t, stats.Updated)
+	require.Equal(t, []string{"function main"}, symbolNames(t, db, stats.Root, "main.go"))
+
+	r, err := db.GetRoot(ctx, stats.Root)
+	require.NoError(t, err)
+	states, err := db.FileStates(ctx, r.ID)
+	require.NoError(t, err)
+	for _, st := range states {
+		require.Equal(t, symbols.Version, st.SymbolsVersion, st.Path)
 	}
 }
 

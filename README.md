@@ -1,12 +1,14 @@
 # chizu
 
-Simple full text search for directories of files, backed by SQLite FTS5.
+Simple full text search for directories of files, backed by SQLite FTS5,
+that also knows where functions and types are defined in source code.
 One static binary with a CLI, an HTTP API + web UI, and an MCP server.
 
 ```sh
 chizu index ~/notes          # index a folder (incremental on re-runs)
 chizu watch ~/notes          # ...and keep it up to date as files change
 chizu search heron           # search it
+chizu def Store.Open         # where is it defined?
 chizu serve                  # http://127.0.0.1:7070 (UI, /api/*, /mcp)
 chizu mcp                    # MCP over stdio
 ```
@@ -41,6 +43,8 @@ The tokenizer is chosen when a database is created:
 | `index [dir...]` | index dirs; with no args, re-index every indexed dir |
 | `watch [dir...]` | index dirs, then re-index them as files change; with no args, every indexed dir |
 | `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--max-tokens`, `--json`) |
+| `def <name>` | where a function, type, method, ... is defined (`--body`, `--kind`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--max-tokens`, `--json`) |
+| `outline <path\|id>` | the definitions in a source file, nested, with their line ranges |
 | `roots` | list indexed dirs |
 | `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--ids`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
@@ -70,6 +74,21 @@ control dirs (`.git/` ...), dependency dirs (`node_modules/`, `vendor/`,
 database. `chizu init` writes the full list to a file; delete a line to
 index those files.
 
+## Definitions
+
+Source files are parsed with [tree-sitter](https://tree-sitter.github.io/)
+while they are indexed, and their definitions are stored next to their text:
+Bash, C, C#, C++, Go, Java, JavaScript, Kotlin, Lua, PHP, Python, Ruby, Rust,
+Scala, TypeScript/TSX and Zig. `chizu def open` finds definitions named
+`open` (ignoring case), and `Store.Open`, `Store::open` or `Store#open`
+only those inside `Store` (or with it as their receiver). With no exact
+match it shows names containing the query. `--body` prints each
+definition's source. `chizu outline file.py` lists a file's definitions
+without printing it.
+
+What counts as a definition, and its kind, comes from a small query per
+language in `src/symbols/queries/`.
+
 ## Watching
 
 `chizu watch` indexes once and then waits for file changes, re-indexing the
@@ -93,6 +112,8 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 | `GET /api/roots` | `{"roots": [...]}` |
 | `GET /api/files?q=&dir=&path=&ext=&limit=&offset=` (`q` filters by path) | `{"total": n, "files": [...]}` |
 | `GET /api/file?path=` or `?id=` (`&raw=1` for text/plain; `&q=` adds `matches`, the matching lines, with `&fts=1` for FTS5 syntax) | file |
+| `GET /api/def?name=&body=&kind=&dir=&path=&ext=&limit=&offset=` | `{"definitions": [...]}` |
+| `GET /api/outline?path=` or `?id=` | `{"symbols": [...]}` |
 | `GET /api/info` | db, tokenizer, driver, version |
 | `POST /api/index` `{"dirs": [], "exts": [], "include": [], "exclude": [], "max_size": 0, "clear_filters": false}` | stats |
 | `DELETE /api/roots?path=` | remove |
@@ -101,9 +122,9 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 
 ## MCP
 
-Tools: `search`, `list_roots`, `list_files`, `read_file` (with `query`, only
-the matching lines), plus `index` and `remove_root`
-unless `--read-only`. For Claude Code:
+Tools: `search`, `find_definition` (with `body`, the source), `file_outline`,
+`list_roots`, `list_files`, `read_file` (with `query`, only the matching
+lines), plus `index` and `remove_root` unless `--read-only`. For Claude Code:
 
 ```sh
 claude mcp add chizu -- chizu mcp --db /path/to/.chizu.sqlite
@@ -117,13 +138,21 @@ matches first.
 ## Building
 
 ```sh
-make build       # static, pure Go (modernc.org/sqlite)    -> bin/chizu
-make build-cgo   # static, cgo (mattn/go-sqlite3)          -> bin/chizu-cgo
+make build       # pure Go SQLite (modernc.org/sqlite)    -> bin/chizu
+make build-cgo   # cgo SQLite (mattn/go-sqlite3)          -> bin/chizu-cgo
 make test-all    # tests against both drivers
 ```
 
-The cgo driver is only used with `-tags sqlite_fts5` (which mattn needs for
+tree-sitter's parsers are C, so building needs cgo and a C compiler. On
+Linux the binary is linked statically (`STATIC=` links dynamically). The
+mattn driver is only used with `-tags sqlite_fts5` (which it needs for
 FTS5); any other build uses the pure Go driver.
+
+Releases cross-compile Linux (static, musl) and Windows with
+[zig](https://ziglang.org/) as the C compiler, e.g.
+`GOOS=windows GOARCH=amd64 CC="zig cc -target x86_64-windows-gnu" make build STATIC=`,
+and build macOS on macOS. FreeBSD and OpenBSD are not built: the Go
+tree-sitter binding does not support them yet.
 
 ## Layout
 
@@ -133,8 +162,9 @@ src/cmd          CLI (urfave/cli)
 src/database     SQLite connection (cgo / pure Go), schema, queries
 src/ignore       .chizuignore matching
 src/indexer      directory walking, text sniffing, incremental updates
+src/symbols      definitions in source files (tree-sitter, one query per language)
 src/watch        re-indexing on file changes (fsnotify)
-src/search       query building, filters, snippets, line numbers
+src/search       query building, filters, snippets, line numbers, definitions, token budgets
 src/api          HTTP API (chi) and embedded web UI
 src/mcp          MCP server (mcp-go)
 ```

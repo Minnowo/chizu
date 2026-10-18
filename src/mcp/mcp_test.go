@@ -34,7 +34,7 @@ func newFixture(t *testing.T, readOnly bool) *fixture {
 	require.NoError(t, err)
 	for p, c := range map[string]string{
 		"monday.md":    "# Monday\nSaw a heron.\nline three\nline four",
-		"code/main.go": "package main // heron",
+		"code/main.go": "package main // heron\n\ntype Store struct{}\n\nfunc (s *Store) Open(path string) error {\n\treturn nil\n}\n\nfunc main() {}\n",
 	} {
 		full := filepath.Join(dir, p)
 		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
@@ -95,8 +95,9 @@ func toolNames(t *testing.T, f *fixture) []string {
 }
 
 func TestTools(t *testing.T) {
-	require.ElementsMatch(t, []string{"search", "list_roots", "list_files", "read_file", "index", "remove_root"}, toolNames(t, newFixture(t, false)))
-	require.ElementsMatch(t, []string{"search", "list_roots", "list_files", "read_file"}, toolNames(t, newFixture(t, true)))
+	readOnly := []string{"search", "find_definition", "file_outline", "list_roots", "list_files", "read_file"}
+	require.ElementsMatch(t, append(readOnly, "index", "remove_root"), toolNames(t, newFixture(t, false)))
+	require.ElementsMatch(t, readOnly, toolNames(t, newFixture(t, true)))
 }
 
 func TestSearchTool(t *testing.T) {
@@ -281,6 +282,53 @@ func TestSearchToolMaxTokens(t *testing.T) {
 
 	res = f.call(t, "search", map[string]any{"query": "heron", "max_tokens": search.EstimateTokens(full)})
 	require.Equal(t, full, text(t, res), "a budget the results fit in changes nothing")
+}
+
+func TestFindDefinitionTool(t *testing.T) {
+	f := newFixture(t, false)
+	mainGo := filepath.Join(f.dir, "code", "main.go")
+
+	res := f.call(t, "find_definition", map[string]any{"name": "open"})
+	require.False(t, res.IsError, text(t, res))
+	out := text(t, res)
+	require.Contains(t, out, mainGo+":5 (file_id")
+	require.Contains(t, out, "method Store.Open (lines 5-7)")
+	require.Contains(t, out, "func (s *Store) Open(path string) error {")
+	require.NotContains(t, out, "return nil", "no body unless asked")
+
+	out = text(t, f.call(t, "find_definition", map[string]any{"name": "Store.Open", "body": true}))
+	require.Contains(t, out, "6: \treturn nil")
+	require.Contains(t, out, "7: }")
+
+	require.Contains(t, text(t, f.call(t, "find_definition", map[string]any{"name": "Other.Open"})), "No definitions named Other.Open")
+
+	out = text(t, f.call(t, "find_definition", map[string]any{"name": "ope"}))
+	require.Contains(t, out, "No exact match for ope; names containing it:")
+	require.Contains(t, out, "Store.Open")
+
+	out = text(t, f.call(t, "find_definition", map[string]any{"name": "Store", "kinds": []string{"function"}}))
+	require.Contains(t, out, "No definitions named Store")
+
+	res = f.call(t, "find_definition", map[string]any{"name": "ope", "max_tokens": 1})
+	require.False(t, res.IsError)
+	require.Equal(t, "No exact match for ope; names containing it:\n\n[token budget of 1 reached: 1 dropped; narrow the query or raise max_tokens]", text(t, res))
+}
+
+func TestFileOutlineTool(t *testing.T) {
+	f := newFixture(t, false)
+
+	res := f.call(t, "file_outline", map[string]any{"path": filepath.Join(f.dir, "code", "main.go")})
+	require.False(t, res.IsError, text(t, res))
+	out := text(t, res)
+	require.Contains(t, out, "3-3 struct Store\n")
+	require.Contains(t, out, "5-7 method Open\n")
+	require.Contains(t, out, "9-9 function main\n")
+
+	res = f.call(t, "file_outline", map[string]any{"path": filepath.Join(f.dir, "monday.md")})
+	require.False(t, res.IsError)
+	require.Contains(t, text(t, res), "No definitions found (4 lines)")
+
+	require.True(t, f.call(t, "file_outline", map[string]any{}).IsError)
 }
 
 func TestReadFileToolMaxTokens(t *testing.T) {

@@ -173,3 +173,76 @@ func (s *Store) ListFiles(ctx context.Context, p ListParams) ([]FileInfo, int64,
 
 	return files, total, err
 }
+
+type SymbolParams struct {
+	// Name is matched ignoring case: exactly, or as a substring if Substring is set.
+	Name      string
+	Substring bool
+	// Parent, if set, must equal the symbol's parent, ignoring case.
+	Parent string
+	// Kinds, if any, limit results to these kinds.
+	Kinds []string
+	Filter
+	Limit  int
+	Offset int
+}
+
+// SymbolHit is a symbol and the file it is in.
+type SymbolHit struct {
+	Symbol
+	RootPath string `db:"root_path"`
+	Path     string `db:"path"`
+}
+
+// FindSymbols looks up definitions by name. Exact-case matches come first,
+// then (for substring searches) names starting with Name, then shorter names.
+func (s *Store) FindSymbols(ctx context.Context, p SymbolParams) ([]SymbolHit, error) {
+
+	var sb strings.Builder
+	var args []any
+
+	sb.WriteString(`
+		SELECT s.file_id, s.name, s.kind, s.parent, s.line, s.end_line, s.signature, r.path AS root_path, f.path
+		FROM symbols s
+		JOIN files f ON f.id = s.file_id
+		JOIN roots r ON r.id = f.root_id
+		WHERE `)
+
+	if p.Substring {
+		sb.WriteString(`s.name LIKE ? ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(p.Name)+"%")
+	} else {
+		sb.WriteString(`s.name = ? COLLATE NOCASE`)
+		args = append(args, p.Name)
+	}
+
+	if p.Parent != "" {
+		sb.WriteString(` AND s.parent = ? COLLATE NOCASE`)
+		args = append(args, p.Parent)
+	}
+
+	if len(p.Kinds) > 0 {
+		sb.WriteString(" AND s.kind IN (?" + strings.Repeat(", ?", len(p.Kinds)-1) + ")")
+		for _, k := range p.Kinds {
+			args = append(args, k)
+		}
+	}
+
+	args = p.Filter.where(&sb, args)
+
+	sb.WriteString(` ORDER BY s.name = ? DESC, s.name LIKE ? ESCAPE '\' DESC, length(s.name), r.path, f.path, s.line LIMIT ? OFFSET ?`)
+	args = append(args, p.Name, escapeLike(p.Name)+"%", p.Limit, max(p.Offset, 0))
+
+	hits := []SymbolHit{}
+	err := sqlx.SelectContext(ctx, s.q, &hits, sb.String(), args...)
+	return hits, err
+}
+
+// FileSymbols returns a file's symbols in source order.
+func (s *Store) FileSymbols(ctx context.Context, fileID int64) ([]Symbol, error) {
+	syms := []Symbol{}
+	err := sqlx.SelectContext(ctx, s.q, &syms, `
+		SELECT file_id, name, kind, parent, line, end_line, signature
+		FROM symbols WHERE file_id = ? ORDER BY line, id`, fileID)
+	return syms, err
+}

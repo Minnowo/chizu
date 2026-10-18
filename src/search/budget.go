@@ -135,6 +135,39 @@ func FitResults(results []Result, maxTokens int) ([]Result, Budget) {
 	return out, b
 }
 
+// FitDefinitions cuts definitions down to about maxTokens of
+// FormatDefinitions output: bodies keep as many lines as fit, then
+// definitions keep only their location. maxTokens <= 0 means no limit.
+func FitDefinitions(defs []Definition, maxTokens int) ([]Definition, Budget) {
+
+	if maxTokens <= 0 {
+		return defs, Budget{}
+	}
+	if used := EstimateTokens(FormatDefinitions(defs)); used <= maxTokens {
+		return defs, Budget{MaxTokens: maxTokens, Used: used}
+	}
+
+	withBody := func(d Definition, k int) Definition {
+		if len(d.Body) > 0 {
+			d.Body = d.Body[:k]
+		}
+		return d
+	}
+
+	keep, b := fitBudget(len(defs),
+		func(i int) int { return len(defs[i].Body) },
+		func(i, k int) int { return EstimateTokens(formatDefinition(withBody(defs[i], k))) + 1 },
+		maxTokens)
+
+	out := make([]Definition, 0, len(defs))
+	for i, k := range keep {
+		if k >= 0 {
+			out = append(out, withBody(defs[i], k))
+		}
+	}
+	return out, b
+}
+
 // FormatResults renders results as plain text, the way they are given to models.
 func FormatResults(results []Result) string {
 	var sb strings.Builder
@@ -170,6 +203,42 @@ func PlainText(segs []Segment) string {
 	var sb strings.Builder
 	for _, s := range segs {
 		sb.WriteString(s.Text)
+	}
+	return sb.String()
+}
+
+// FormatDefinitions renders definitions as plain text, the way they are given to models.
+func FormatDefinitions(defs []Definition) string {
+	var sb strings.Builder
+	for i, d := range defs {
+		if i > 0 && len(d.Body) > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(formatDefinition(d))
+	}
+	return sb.String()
+}
+
+func formatDefinition(d Definition) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s:%d (file_id %d) %s %s", d.AbsPath, d.Line, d.FileID, d.Kind, d.QualifiedName())
+	if d.EndLine > d.Line {
+		fmt.Fprintf(&sb, " (lines %d-%d)", d.Line, d.EndLine)
+	}
+	sb.WriteString("\n")
+
+	if len(d.Body) == 0 {
+		if d.Signature != "" {
+			sb.WriteString("  " + d.Signature + "\n")
+		}
+		return sb.String()
+	}
+
+	for i, l := range d.Body {
+		fmt.Fprintf(&sb, "%d: %s\n", d.Line+i, l)
+	}
+	if last := d.Line + len(d.Body) - 1; last < d.EndLine {
+		fmt.Fprintf(&sb, "… %d more lines (read_file start_line=%d)\n", d.EndLine-last, last+1)
 	}
 	return sb.String()
 }
