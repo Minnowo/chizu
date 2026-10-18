@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"chizu/src/ignore"
 	"chizu/src/indexer"
 
+	"github.com/rs/zerolog"
 	"github.com/urfave/cli/v3"
 )
 
@@ -44,21 +46,50 @@ func indexCommand() *cli.Command {
 		Name:      "index",
 		Usage:     "index directories (with no arguments, re-index everything already indexed)",
 		ArgsUsage: "[dir...]",
-		Flags: []cli.Flag{
-			dbFlag(),
-			&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "`DIR` to index (repeatable)"},
-			&cli.StringFlag{Name: "tokenizer", Usage: "tokenizer for a new database: unicode61 (words, stemming) or trigram (substrings)"},
-			&cli.StringSliceFlag{Name: "ext", Aliases: []string{"e"}, Usage: "only index these extensions, e.g. --ext md,txt"},
-			&cli.StringSliceFlag{Name: "include", Usage: "only index files matching these gitignore-style `PATTERN`s"},
-			&cli.StringSliceFlag{Name: "exclude", Aliases: []string{"x"}, Usage: "skip paths matching these gitignore-style `PATTERN`s"},
-			&cli.Int64Flag{Name: "max-size", Usage: "skip files larger than `BYTES` (default 10MiB)"},
-			&cli.BoolFlag{Name: "clear-filters", Usage: "forget the filters saved from earlier runs"},
-			&cli.IntFlag{Name: "workers", Aliases: []string{"j"}, Usage: "files read and hashed in parallel (default: number of CPUs)"},
-			&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "no progress output"},
-			jsonFlag(),
-		},
-		Action: runIndex,
+		Flags:     append(indexFlags(), jsonFlag()),
+		Action:    runIndex,
 	}
+}
+
+// indexFlags are the flags shared by index and watch.
+func indexFlags() []cli.Flag {
+	return []cli.Flag{
+		dbFlag(),
+		&cli.StringSliceFlag{Name: "input", Aliases: []string{"i"}, Usage: "`DIR` to index (repeatable)"},
+		&cli.StringFlag{Name: "tokenizer", Usage: "tokenizer for a new database: unicode61 (words, stemming) or trigram (substrings)"},
+		&cli.StringSliceFlag{Name: "ext", Aliases: []string{"e"}, Usage: "only index these extensions, e.g. --ext md,txt"},
+		&cli.StringSliceFlag{Name: "include", Usage: "only index files matching these gitignore-style `PATTERN`s"},
+		&cli.StringSliceFlag{Name: "exclude", Aliases: []string{"x"}, Usage: "skip paths matching these gitignore-style `PATTERN`s"},
+		&cli.Int64Flag{Name: "max-size", Usage: "skip files larger than `BYTES` (default 10MiB)"},
+		&cli.BoolFlag{Name: "clear-filters", Usage: "forget the filters saved from earlier runs"},
+		&cli.IntFlag{Name: "workers", Aliases: []string{"j"}, Usage: "files read and hashed in parallel (default: number of CPUs)"},
+		&cli.BoolFlag{Name: "quiet", Aliases: []string{"q"}, Usage: "no progress output"},
+	}
+}
+
+// indexOptions builds indexer options from the index flags.
+func indexOptions(cmd *cli.Command, dbFile string, log zerolog.Logger) indexer.Options {
+	return indexer.Options{
+		Exts:         cmd.StringSlice("ext"),
+		Include:      cmd.StringSlice("include"),
+		Exclude:      cmd.StringSlice("exclude"),
+		MaxSize:      cmd.Int64("max-size"),
+		ClearFilters: cmd.Bool("clear-filters"),
+		Workers:      cmd.Int("workers"),
+		SkipPaths:    dbFiles(dbFile),
+		Log:          log,
+	}
+}
+
+// dbFiles are the database file and the files SQLite keeps next to it.
+func dbFiles(dbFile string) []string {
+	return []string{dbFile, dbFile + "-wal", dbFile + "-shm", dbFile + "-journal"}
+}
+
+// printStats prints the one-line summary of an index run.
+func printStats(w io.Writer, stats indexer.Stats, took time.Duration) {
+	fmt.Fprintf(w, "indexed %s in %s: %d added, %d updated, %d unchanged, %d removed, %d skipped\n",
+		stats.Root, took.Round(time.Millisecond), stats.Added, stats.Updated, stats.Unchanged, stats.Removed, stats.Skipped)
 }
 
 func runIndex(ctx context.Context, cmd *cli.Command) error {
@@ -76,16 +107,7 @@ func runIndex(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer db.Close()
 
-	opts := indexer.Options{
-		Exts:         cmd.StringSlice("ext"),
-		Include:      cmd.StringSlice("include"),
-		Exclude:      cmd.StringSlice("exclude"),
-		MaxSize:      cmd.Int64("max-size"),
-		ClearFilters: cmd.Bool("clear-filters"),
-		Workers:      cmd.Int("workers"),
-		SkipPaths:    []string{dbFile, dbFile + "-wal", dbFile + "-shm", dbFile + "-journal"},
-		Log:          log,
-	}
+	opts := indexOptions(cmd, dbFile, log)
 	if isTerminal(errW) && !cmd.Bool("quiet") {
 		opts.Progress = status.update
 	}
@@ -127,8 +149,7 @@ func runIndex(ctx context.Context, cmd *cli.Command) error {
 
 		all = append(all, stats)
 		if !cmd.Bool("json") {
-			fmt.Fprintf(w, "indexed %s in %s: %d added, %d updated, %d unchanged, %d removed, %d skipped\n",
-				stats.Root, time.Since(start).Round(time.Millisecond), stats.Added, stats.Updated, stats.Unchanged, stats.Removed, stats.Skipped)
+			printStats(w, stats, time.Since(start))
 		}
 	}
 

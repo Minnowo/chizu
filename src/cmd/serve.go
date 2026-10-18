@@ -28,6 +28,8 @@ func serveCommand() *cli.Command {
 			dbFlag(),
 			&cli.StringFlag{Name: "addr", Aliases: []string{"a"}, Value: "127.0.0.1:7070", Usage: "listen `ADDRESS`", Sources: cli.EnvVars("CHIZU_ADDR")},
 			readOnlyFlag(),
+			watchFlag(),
+			debounceFlag(),
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 
@@ -43,6 +45,8 @@ func serveCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
+
+			startWatch(ctx, cmd, db, dbFile, log)
 
 			srv := &http.Server{
 				Handler:           serveHandler(db, dbFile, cmd.Bool("read-only"), log),
@@ -87,7 +91,7 @@ func mcpCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "mcp",
 		Usage: "serve MCP over stdio (for Claude Code, Claude Desktop, and other MCP clients)",
-		Flags: []cli.Flag{dbFlag(), readOnlyFlag()},
+		Flags: []cli.Flag{dbFlag(), readOnlyFlag(), watchFlag(), debounceFlag()},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 
 			log := logger(cmd)
@@ -97,6 +101,8 @@ func mcpCommand() *cli.Command {
 				return err
 			}
 			defer db.Close()
+
+			startWatch(ctx, cmd, db, dbFile, log)
 
 			s := mcp.New(mcp.Config{DB: db, DBPath: dbFile, ReadOnly: cmd.Bool("read-only"), Log: log})
 			return mcp.ServeStdio(ctx, s, cmd.Root().Reader, cmd.Root().Writer)

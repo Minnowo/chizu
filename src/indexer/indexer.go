@@ -359,15 +359,7 @@ func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, 
 		rel = filepath.ToSlash(rel)
 
 		if d.IsDir() {
-			if matcher.Ignored(rel, true) || (f.exclude != nil && f.exclude.Matches(rel, true)) {
-				return filepath.SkipDir
-			}
-			if err := matcher.LoadDir(root, rel); err != nil {
-				// Its rules are unknown, so skipping is safer than indexing it.
-				log.Warn().Err(err).Str("dir", rel).Msg("cannot read ignore file, skipping directory")
-				return filepath.SkipDir
-			}
-			return nil
+			return enterDir(root, rel, matcher, f, log)
 		}
 
 		if !d.Type().IsRegular() || skip[path] {
@@ -409,6 +401,71 @@ func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, 
 			return ctx.Err()
 		}
 	})
+}
+
+// enterDir returns nil if the walk should descend into the directory rel,
+// loading its ignore file, or filepath.SkipDir if it is ignored.
+func enterDir(root, rel string, matcher *ignore.Matcher, f filters, log zerolog.Logger) error {
+	if matcher.Ignored(rel, true) || (f.exclude != nil && f.exclude.Matches(rel, true)) {
+		return filepath.SkipDir
+	}
+	if err := matcher.LoadDir(root, rel); err != nil {
+		// Its rules are unknown, so skipping is safer than indexing it.
+		log.Warn().Err(err).Str("dir", rel).Msg("cannot read ignore file, skipping directory")
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+// Dirs returns the absolute paths of every directory an index of the
+// indexed root dir looks in, using the filters saved for it.
+func Dirs(ctx context.Context, db *database.DB, dir string, log zerolog.Logger) ([]string, error) {
+
+	r, err := LookupRoot(ctx, db, dir)
+	if err != nil {
+		return nil, err
+	}
+
+	var opts Options
+	if err := json.Unmarshal([]byte(r.Options), &opts); err != nil {
+		return nil, fmt.Errorf("saved options for %s: %w", r.Path, err)
+	}
+	f, err := compileFilters(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	matcher, err := ignore.NewMatcher(r.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	dirs := []string{r.Path}
+	err = filepath.WalkDir(r.Path, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() && path != r.Path {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !d.IsDir() || path == r.Path {
+			return nil
+		}
+		rel, err := filepath.Rel(r.Path, path)
+		if err != nil {
+			return err
+		}
+		if err := enterDir(r.Path, filepath.ToSlash(rel), matcher, f, log); err != nil {
+			return err
+		}
+		dirs = append(dirs, path)
+		return nil
+	})
+
+	return dirs, err
 }
 
 // process reads, sniffs and hashes one file.

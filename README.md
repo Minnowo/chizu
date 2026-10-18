@@ -5,6 +5,7 @@ One static binary with a CLI, an HTTP API + web UI, and an MCP server.
 
 ```sh
 chizu index ~/notes          # index a folder (incremental on re-runs)
+chizu watch ~/notes          # ...and keep it up to date as files change
 chizu search heron           # search it
 chizu serve                  # http://127.0.0.1:7070 (UI, /api/*, /mcp)
 chizu mcp                    # MCP over stdio
@@ -38,14 +39,15 @@ The tokenizer is chosen when a database is created:
 |---|---|
 | `init [dir]` | write a `.chizuignore` with the default rules |
 | `index [dir...]` | index dirs; with no args, re-index every indexed dir |
+| `watch [dir...]` | index dirs, then re-index them as files change; with no args, every indexed dir |
 | `search <query...>` | search (`--raw`, `--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--lines`, `--json`) |
 | `roots` | list indexed dirs |
 | `files [text]` | list indexed files, optionally only paths containing `text` (`--dir`, `--path`, `--ext`, `--limit`, `--offset`, `--ids`, `--json`) |
 | `remove <dir...>` | drop dirs from the index |
 | `cat <path\|id>` | print an indexed file (`--match <query>` prints only its matching lines, numbered) |
 | `vacuum` | shrink the database after many files were removed |
-| `serve` | HTTP API, web UI and MCP (`--addr`, `--read-only`) |
-| `mcp` | MCP over stdio (`--read-only`) |
+| `serve` | HTTP API, web UI and MCP (`--addr`, `--read-only`, `--watch`) |
+| `mcp` | MCP over stdio (`--read-only`, `--watch`) |
 
 `search` shows each file's id next to its path, so `chizu cat 12` can stand
 in for a long path. `search` exits 1 when nothing matched and 2 on error, like grep.
@@ -67,6 +69,15 @@ control dirs (`.git/` ...), dependency dirs (`node_modules/`, `vendor/`,
 `.gradle/`, `CMakeFiles/`, `cmake-build-*/` ...), caches and chizu's own
 database. `chizu init` writes the full list to a file; delete a line to
 index those files.
+
+## Watching
+
+`chizu watch` indexes once and then waits for file changes, re-indexing the
+indexed dir they happened in after `--debounce` (default 500ms) of quiet. It
+is the same incremental index as `chizu index`, so only changed files are
+read. `serve --watch` and `mcp --watch` do the same in the background for
+every indexed dir, including dirs indexed later. Ignored directories are not
+watched.
 
 ## Queries
 
@@ -117,6 +128,7 @@ src/cmd          CLI (urfave/cli)
 src/database     SQLite connection (cgo / pure Go), schema, queries
 src/ignore       .chizuignore matching
 src/indexer      directory walking, text sniffing, incremental updates
+src/watch        re-indexing on file changes (fsnotify)
 src/search       query building, filters, snippets, line numbers
 src/api          HTTP API (chi) and embedded web UI
 src/mcp          MCP server (mcp-go)

@@ -11,6 +11,7 @@ import (
 
 	"chizu/src/database"
 
+	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -494,4 +495,33 @@ func TestIndexTruncatesWALWhileAnotherProcessHasItOpen(t *testing.T) {
 	if err == nil {
 		require.Zero(t, st.Size(), "WAL is truncated after indexing")
 	}
+}
+
+func TestDirs(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	writeTree(t, dir, map[string]string{
+		"a/b/c.md":          "x",
+		"skip/d.md":         "x",
+		"node_modules/e.js": "x",
+		"keep/.chizuignore": "inner/\n",
+		"keep/inner/f.md":   "x",
+	})
+
+	_, err = Dirs(ctx, db, dir, zerolog.Nop())
+	require.Error(t, err, "not indexed")
+
+	_, err = Index(ctx, db, dir, Options{Exclude: []string{"skip/"}})
+	require.NoError(t, err)
+
+	dirs, err := Dirs(ctx, db, dir, zerolog.Nop())
+	require.NoError(t, err)
+	for i := range dirs {
+		dirs[i], err = filepath.Rel(dir, dirs[i])
+		require.NoError(t, err)
+	}
+	require.ElementsMatch(t, []string{".", "a", filepath.Join("a", "b"), "keep"}, dirs)
 }

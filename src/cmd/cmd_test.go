@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -409,6 +410,13 @@ func TestDBFromEnv(t *testing.T) {
 }
 
 func TestMCPStdio(t *testing.T) {
+	// --watch indexes in the background; its logs must not reach stdout either.
+	for _, args := range [][]string{{"mcp"}, {"mcp", "--watch", "--log-level", "debug"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) { testMCPStdio(t, args) })
+	}
+}
+
+func testMCPStdio(t *testing.T, args []string) {
 	dir := notesDir(t)
 	db := filepath.Join(t.TempDir(), "x.sqlite")
 	mustRun(t, "index", "--db", db, dir)
@@ -434,7 +442,7 @@ func TestMCPStdio(t *testing.T) {
 	var errOut bytes.Buffer
 	app := New(out, &errOut)
 	app.Reader = pr
-	require.NoError(t, app.Run(t.Context(), []string{"chizu", "mcp", "--db", db}), errOut.String())
+	require.NoError(t, app.Run(t.Context(), append(append([]string{"chizu"}, args...), "--db", db)), errOut.String())
 
 	// Every stdout line is a JSON-RPC message; logs must not leak into it.
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
@@ -524,4 +532,50 @@ func TestIndexReportsEachDirectoryClearly(t *testing.T) {
 	// Re-indexing everything reports each root the same way.
 	out = mustRun(t, "index", "--db", db)
 	require.Contains(t, out.stdout, "indexed "+dir+" in ")
+}
+
+// syncBuffer is a bytes.Buffer safe to write from one goroutine and read from another.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestWatchCommand(t *testing.T) {
+	dir := notesDir(t)
+	db := filepath.Join(t.TempDir(), "x.sqlite")
+
+	_, err := run(t, "watch", "--db", db)
+	require.ErrorContains(t, err, "nothing is indexed")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var out, errOut syncBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- New(&out, &errOut).Run(ctx, []string{"chizu", "watch", "--db", db, "--debounce", "20ms", dir})
+	}()
+
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "watching "+dir) }, 5*time.Second, 10*time.Millisecond)
+	require.Contains(t, out.String(), "4 added")
+
+	writeTree(t, dir, map[string]string{"wednesday.md": "Saw an egret."})
+	require.Eventually(t, func() bool { return strings.Contains(out.String(), "1 added") }, 5*time.Second, 10*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+	require.Empty(t, errOut.String())
+
+	out2 := mustRun(t, "search", "--db", db, "egret")
+	require.Contains(t, out2.stdout, "wednesday.md")
 }
