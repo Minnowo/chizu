@@ -57,26 +57,49 @@
   #viewer-body.nowrap > div { width: max-content; min-width: 100%; }
   #viewer-body .hit { background: var(--color-c-primary-hover-tint); }
   #viewer-body .current { background: var(--color-c-primary-focus-tint); }
+  #viewer-body .def { background: var(--color-c-secondary-hover-tint); }
+  .tag {
+    font-size: .75rem; padding: 0 .5em; border-radius: var(--radius-sm); white-space: nowrap;
+    background: var(--color-c-secondary-container); color: var(--color-c-on-secondary-container);
+  }
+  .tag.live { background: var(--color-c-success-container); color: var(--color-c-on-success-container); }
+  #viewer-main { display: flex; gap: 8px; flex: 1; min-height: 0; }
+  #viewer-main pre { min-width: 0; }
+  #viewer-outline { flex: none; width: min(16rem, 40%); overflow: auto; font-size: .875rem; }
+  #viewer-outline a { display: flex; gap: .5em; align-items: baseline; padding: 2px 4px; border-radius: var(--radius-sm); text-decoration: none; overflow-wrap: anywhere; }
+  #viewer-outline a:hover, #viewer-outline a[aria-current] { background: var(--color-c-secondary-hover-tint); }
+  #viewer-outline small { color: var(--color-c-on-surface-variant); }
+  /* Too narrow for two columns: the outline goes above the file. */
+  @media (max-width: 640px) {
+    #viewer-main { flex-direction: column; }
+    #viewer-outline { width: auto; max-height: 35%; }
+  }
 </style>
 </head>
 <body>
 <main class="flex flex-col gap-4">
   <header class="flex flex-wrap items-center gap-2">
     <div class="flex-1 basis-48 flex flex-col">
-      <h1>chizu</h1>
+      <div class="flex items-center gap-2">
+        <h1>chizu</h1>
+        <small id="watching" class="tag live" title="Started with --watch: files are re-indexed as they change" hidden>watching</small>
+      </div>
       <small id="info" class="path"></small>
     </div>
     <nav class="flex gap-1" aria-label="View">
       <button type="button" data-view="search" class="btn-primary" aria-pressed="true">Search</button>
+      <button type="button" data-view="defs" class="btn-outlined" aria-pressed="false">Definitions</button>
       <button type="button" data-view="files" class="btn-outlined" aria-pressed="false">Files</button>
     </nav>
-    <button type="button" id="theme" aria-pressed="false">Light mode</button>
+    <label class="flex items-center gap-2">
+      <input type="checkbox" id="theme"> Light mode
+    </label>
   </header>
 
   <form id="form" role="search" class="surface-1 flex flex-col gap-4">
     <div class="flex items-end gap-2">
       <label class="flex-1 flex flex-col gap-1">
-        <span id="q-caption">Query</span>
+        Query
         <input type="text" id="q" placeholder="Words, &quot;a phrase&quot;, or pre*" autofocus autocomplete="off">
       </label>
       <button class="btn-primary" type="submit" id="go">Search</button>
@@ -122,12 +145,18 @@
       <button type="button" id="viewer-prev">Previous</button>
       <button type="button" id="viewer-next">Next</button>
     </div>
+    <label id="viewer-outline-label" class="flex items-center gap-2" hidden>
+      <input type="checkbox" id="viewer-outline-toggle" checked> Outline
+    </label>
     <label class="flex items-center gap-2">
       <input type="checkbox" id="viewer-wrap" checked> Wrap lines
     </label>
     <button type="button" id="viewer-close">Close</button>
   </div>
-  <pre id="viewer-body"></pre>
+  <div id="viewer-main">
+    <aside id="viewer-outline" class="surface-2" aria-label="Definitions in this file" hidden></aside>
+    <pre id="viewer-body"></pre>
+  </div>
 </dialog>
 
 <script>
@@ -155,14 +184,15 @@ function setStatus(text, isError = false) {
 }
 
 // fileLink is a real link to the raw file (so middle-click works) that opens
-// the viewer on a plain click, highlighting query's matches if given.
-function fileLink(f, text, query) {
+// the viewer on a plain click, highlighting query's matches if given, or
+// the lines of focus ({line, end_line}).
+function fileLink(f, text, query, focus) {
   return el("a", {
     className: "path", href: "/api/file?raw=1&id=" + f.file_id, textContent: text,
     onclick: (e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
-      openFile(f, query);
+      openFile(f, query, focus);
     },
   });
 }
@@ -171,11 +201,11 @@ function fileLink(f, text, query) {
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  $("theme").setAttribute("aria-pressed", theme === "light");
+  $("theme").checked = theme === "light";
 }
 
-$("theme").addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+$("theme").addEventListener("change", () => {
+  const next = $("theme").checked ? "light" : "dark";
   applyTheme(next);
   try { localStorage.setItem("chizu-theme", next); } catch {}
 });
@@ -193,17 +223,23 @@ function filterParams() {
   return params;
 }
 
+const VIEWS = {
+  search: { caption: "Query", placeholder: 'Words, "a phrase", or pre*', go: "Search" },
+  defs: { caption: "Name", placeholder: "A function, type or method, e.g. Open or Store.Open", go: "Find" },
+  files: { caption: "Filter by path", placeholder: "Part of a file name or path", go: "List" },
+};
+
 function setView(v) {
   view = v;
-  for (const b of document.querySelectorAll("nav button")) {
+  for (const b of document.querySelectorAll("header nav button")) {
     const on = b.dataset.view === v;
     b.className = on ? "btn-primary" : "btn-outlined";
     b.setAttribute("aria-pressed", on);
   }
-  $("q-caption").textContent = v === "files" ? "Filter by path" : "Query";
-  $("q").placeholder = v === "files" ? "Part of a file name or path" : 'Words, "a phrase", or pre*';
-  $("go").textContent = v === "files" ? "List" : "Search";
-  $("raw-label").hidden = v === "files";
+  $("q").labels[0].firstChild.nodeValue = VIEWS[v].caption; // the label's text, before the input
+  $("q").placeholder = VIEWS[v].placeholder;
+  $("go").textContent = VIEWS[v].go;
+  $("raw-label").hidden = v !== "search";
   $("results").replaceChildren();
   $("more").hidden = true;
   setStatus("");
@@ -211,7 +247,9 @@ function setView(v) {
 }
 
 function run() {
-  if (view === "files") listFiles(false); else runSearch();
+  if (view === "files") listFiles(false);
+  else if (view === "defs") findDefs();
+  else runSearch();
 }
 
 /* ---- search ---- */
@@ -258,6 +296,72 @@ function renderResult(r, query) {
   const more = r.line_count - (r.lines || []).length;
   if (more > 0) card.append(el("small", { textContent: `… ${more} more matching line${more === 1 ? "" : "s"}` }));
   return card;
+}
+
+/* ---- definitions ---- */
+
+async function findDefs() {
+  const name = $("q").value.trim();
+  if (!name) return;
+  const id = ++seq;
+
+  const params = filterParams();
+  params.set("name", name);
+  const state = new URLSearchParams(params);
+  state.set("view", "defs");
+  state.set("q", name);
+  state.delete("name");
+  history.replaceState(null, "", "?" + state);
+  params.set("limit", "50");
+
+  setStatus("Looking up…");
+  try {
+    const { definitions } = await api("/api/def?" + params);
+    if (id !== seq) return;
+    const n = definitions.length;
+    if (!n) setStatus("No definitions. Search finds uses, and names in files chizu does not parse.");
+    else setStatus((definitions[0].exact ? "" : "No exact match; names containing it: ") +
+      `${n} definition${n === 1 ? "" : "s"}`);
+    const files = new Map(); // file id -> its lines, shared by the cards' source panels
+    $("results").replaceChildren(...definitions.map(d => renderDef(d, files)));
+  } catch (err) {
+    if (id !== seq) return;
+    setStatus(err.message, true);
+    $("results").replaceChildren();
+  }
+}
+
+function renderDef(d, files) {
+  const name = d.parent ? `${d.parent}.${d.name}` : d.name;
+  const range = d.end_line > d.line ? `lines ${d.line}–${d.end_line}` : `line ${d.line}`;
+
+  const source = el("details", {},
+    el("summary", {}, el("small", { textContent: `Source, ${range}` })),
+    el("pre", { className: "lines", textContent: "Loading…" }));
+  source.addEventListener("toggle", async () => {
+    if (!source.open || source.dataset.loaded) return;
+    source.dataset.loaded = "1";
+    const pre = source.querySelector("pre");
+    try {
+      if (!files.has(d.file_id)) files.set(d.file_id, api("/api/file?id=" + d.file_id).then(f => f.content.split("\n")));
+      const lines = (await files.get(d.file_id)).slice(d.line - 1, d.end_line);
+      pre.replaceChildren(...lines.map((text, i) => el("div", {},
+        el("span", { className: "n", textContent: d.line + i }), text.replace(/\r$/, ""))));
+    } catch (err) {
+      delete source.dataset.loaded;
+      pre.textContent = err.message;
+    }
+  });
+
+  return el("article", { className: "surface-1 flex flex-col gap-2" },
+    el("div", { className: "flex flex-wrap items-baseline gap-2" },
+      el("span", { className: "tag", textContent: d.kind }),
+      el("h4", { className: "path", textContent: name }),
+      el("span", { className: "flex-1 basis-64" }, fileLink(d, `${d.path}:${d.line}`, null, d)),
+      el("small", { className: "path", textContent: d.root })),
+    el("pre", { className: "lines" }, el("div", {},
+      el("span", { className: "n", textContent: d.line }), d.signature)),
+    source);
 }
 
 /* ---- file list ---- */
@@ -315,14 +419,20 @@ function formatSize(n) {
 
 /* ---- viewer, roots, info ---- */
 
-let hits = [];  // the viewer's matching line elements
+let rows = [];  // the viewer's line elements
+let hits = [];  // its matching line elements
 let current = -1;
+let opened = 0; // drops a file's responses once another file is opened
 
-async function openFile(f, query) {
+async function openFile(f, query, focus) {
+  const id = ++opened;
   $("viewer-name").textContent = f.path.split("/").pop();
   $("viewer-path").textContent = f.abs_path;
   $("viewer-body").textContent = "Loading…";
   $("viewer-nav").hidden = true;
+  $("viewer-outline").replaceChildren();
+  showOutline(false);
+  rows = [];
   hits = [];
   current = -1;
   $("viewer").showModal();
@@ -332,12 +442,53 @@ async function openFile(f, query) {
     params.set("q", query.q);
     if (query.raw) params.set("fts", "true");
   }
+  // The outline is extra: a file without one still opens.
+  const outline = api("/api/outline?id=" + f.file_id).then(o => o.symbols, () => []);
   try {
     const file = await api("/api/file?" + params);
+    if (id !== opened) return;
     renderFile(file.content, file.matches || []);
+    if (focus) showLines(focus.line, focus.end_line);
   } catch (err) {
-    $("viewer-body").textContent = err.message;
+    if (id === opened) $("viewer-body").textContent = err.message;
+    return;
   }
+  const symbols = await outline;
+  if (id === opened) renderOutline(symbols);
+}
+
+function renderOutline(symbols) {
+  $("viewer-outline").replaceChildren(...symbols.map(s => {
+    const a = el("a", {
+      href: "#", title: `${s.kind} ${s.name}, lines ${s.line}–${s.end_line}`,
+      onclick: (e) => {
+        e.preventDefault();
+        for (const other of $("viewer-outline").querySelectorAll("[aria-current]")) other.removeAttribute("aria-current");
+        a.setAttribute("aria-current", "true");
+        showLines(s.line, s.end_line);
+      },
+    }, el("span", { textContent: s.name }), el("small", { textContent: s.kind }));
+    a.style.paddingLeft = `calc(4px + ${s.depth}em)`;
+    return a;
+  }));
+  $("viewer-outline-label").hidden = symbols.length === 0;
+  // Open unless closed before; on a phone, closed unless opened before.
+  let saved = null;
+  try { saved = localStorage.getItem("chizu-outline"); } catch {}
+  const open = saved === null ? !matchMedia("(max-width: 640px)").matches : saved === "true";
+  showOutline(symbols.length > 0 && open);
+}
+
+function showOutline(open) {
+  $("viewer-outline").hidden = !open;
+  $("viewer-outline-toggle").checked = open;
+}
+
+// showLines marks lines start..end (1-based) and scrolls to the first.
+function showLines(start, end) {
+  for (const r of $("viewer-body").querySelectorAll(".def")) r.classList.remove("def");
+  for (let i = start - 1; i < Math.min(end, rows.length); i++) rows[i].classList.add("def");
+  rows[start - 1]?.scrollIntoView({ block: "start" });
 }
 
 function renderFile(content, matches) {
@@ -352,6 +503,7 @@ function renderFile(content, matches) {
     const row = el("div", {},
       el("span", { className: "n", textContent: i + 1 }),
       el("span", {}, ...(segs ? segments(segs) : [text.replace(/\r$/, "")])));
+    rows.push(row);
     if (segs) {
       row.className = "hit";
       hits.push(row);
@@ -404,13 +556,14 @@ async function loadInfo() {
     const info = await api("/api/info");
     $("info").textContent = `${info.db} · ${info.tokenizer}`;
     $("reindex").hidden = info.read_only;
+    $("watching").hidden = !info.watching;
   } catch (err) {
     $("info").textContent = err.message;
   }
 }
 
 $("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
-for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => setView(b.dataset.view));
+for (const b of document.querySelectorAll("header nav button")) b.addEventListener("click", () => setView(b.dataset.view));
 $("more").addEventListener("click", () => listFiles(true));
 $("viewer-close").addEventListener("click", () => $("viewer").close());
 function applyWrap(wrap) {
@@ -424,6 +577,11 @@ $("viewer-wrap").addEventListener("change", () => {
   hits[current]?.scrollIntoView({ block: "center" });
 });
 try { applyWrap(localStorage.getItem("chizu-wrap") !== "false"); } catch { applyWrap(true); }
+$("viewer-outline-toggle").addEventListener("change", () => {
+  const open = $("viewer-outline-toggle").checked;
+  showOutline(open);
+  try { localStorage.setItem("chizu-outline", open); } catch {}
+});
 $("viewer-prev").addEventListener("click", () => goToMatch(current - 1));
 $("viewer-next").addEventListener("click", () => goToMatch(current + 1));
 $("viewer").addEventListener("click", (e) => { if (e.target === $("viewer")) $("viewer").close(); });
@@ -460,7 +618,7 @@ $("raw").checked = initial.get("raw") === "true";
 
 loadInfo();
 loadRoots();
-if (initial.get("view") === "files") setView("files");
+if (initial.get("view") === "files" || initial.get("view") === "defs") setView(initial.get("view"));
 else if ($("q").value) runSearch();
 </script>
 </body>

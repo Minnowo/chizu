@@ -114,7 +114,7 @@ the query is FTS5 syntax: `AND`, `OR`, `NOT`, `NEAR(a b, 5)`, `path:term`.
 | `GET /api/file?path=` or `?id=` (`&raw=1` for text/plain; `&q=` adds `matches`, the matching lines, with `&fts=1` for FTS5 syntax) | file |
 | `GET /api/def?name=&body=&kind=&dir=&path=&ext=&limit=&offset=` | `{"definitions": [...]}` |
 | `GET /api/outline?path=` or `?id=` | `{"symbols": [...]}` |
-| `GET /api/info` | db, tokenizer, driver, version |
+| `GET /api/info` | db, tokenizer, driver, version, read_only, watching |
 | `POST /api/index` `{"dirs": [], "exts": [], "include": [], "exclude": [], "max_size": 0, "clear_filters": false}` | stats |
 | `DELETE /api/roots?path=` | remove |
 | `POST /api/vacuum` | `{"before": bytes, "after": bytes}` |

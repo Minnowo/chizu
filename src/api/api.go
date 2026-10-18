@@ -29,6 +29,8 @@ type Config struct {
 	DBPath string
 	// ReadOnly rejects index and remove requests.
 	ReadOnly bool
+	// Watching is reported by /api/info: indexed directories are re-indexed as files change.
+	Watching bool
 	Log      zerolog.Logger
 }
 
@@ -137,6 +139,7 @@ func (s *server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"driver":    database.Driver,
 		"version":   version.Version,
 		"read_only": s.ReadOnly,
+		"watching":  s.Watching,
 	})
 }
 

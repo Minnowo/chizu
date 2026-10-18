@@ -229,7 +229,12 @@ func TestInfo(t *testing.T) {
 	info := decode[map[string]any](t, rec)
 	require.Equal(t, "unicode61", info["tokenizer"])
 	require.Equal(t, true, info["read_only"])
+	require.Equal(t, false, info["watching"])
 	require.Equal(t, database.Driver, info["driver"])
+
+	s.h = New(Config{DB: s.db, Watching: true})
+	info = decode[map[string]any](t, s.do(t, "GET", "/api/info", nil))
+	require.Equal(t, true, info["watching"])
 }
 
 func TestUI(t *testing.T) {

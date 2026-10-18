@@ -469,7 +469,7 @@ func TestServeHandlerMountsAPIAndMCP(t *testing.T) {
 	require.NoError(t, err)
 	defer db.Close()
 
-	srv := httptest.NewServer(serveHandler(db, dbFile, true, zerolog.Nop()))
+	srv := httptest.NewServer(serveHandler(db, dbFile, true, false, zerolog.Nop()))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/search?q=heron")

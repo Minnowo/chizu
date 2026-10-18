@@ -83,15 +83,16 @@ func watchFlag() cli.Flag {
 }
 
 // startWatch watches every indexed root in the background until ctx is
-// done, when --watch is set and the database is writable. Results are logged.
-func startWatch(ctx context.Context, cmd *cli.Command, db *database.DB, dbFile string, log zerolog.Logger) {
+// done, when --watch is set and the database is writable, and reports
+// whether it did. Results are logged.
+func startWatch(ctx context.Context, cmd *cli.Command, db *database.DB, dbFile string, log zerolog.Logger) bool {
 
 	if !cmd.Bool("watch") {
-		return
+		return false
 	}
 	if cmd.Bool("read-only") {
 		log.Warn().Msg("--watch is ignored with --read-only")
-		return
+		return false
 	}
 
 	go func() {
@@ -111,4 +112,5 @@ func startWatch(ctx context.Context, cmd *cli.Command, db *database.DB, dbFile s
 			log.Error().Err(err).Msg("watch stopped")
 		}
 	}()
+	return true
 }

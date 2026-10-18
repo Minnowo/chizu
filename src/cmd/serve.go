@@ -46,10 +46,10 @@ func serveCommand() *cli.Command {
 				return err
 			}
 
-			startWatch(ctx, cmd, db, dbFile, log)
+			watching := startWatch(ctx, cmd, db, dbFile, log)
 
 			srv := &http.Server{
-				Handler:           serveHandler(db, dbFile, cmd.Bool("read-only"), log),
+				Handler:           serveHandler(db, dbFile, cmd.Bool("read-only"), watching, log),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 
@@ -77,9 +77,9 @@ func serveCommand() *cli.Command {
 }
 
 // serveHandler combines the API, web UI and MCP endpoint.
-func serveHandler(db *database.DB, dbFile string, readOnly bool, log zerolog.Logger) http.Handler {
+func serveHandler(db *database.DB, dbFile string, readOnly, watching bool, log zerolog.Logger) http.Handler {
 
-	r := api.New(api.Config{DB: db, DBPath: dbFile, ReadOnly: readOnly, Log: log})
+	r := api.New(api.Config{DB: db, DBPath: dbFile, ReadOnly: readOnly, Watching: watching, Log: log})
 
 	mcpServer := mcp.New(mcp.Config{DB: db, DBPath: dbFile, ReadOnly: readOnly, Log: log})
 	r.Handle("/mcp", mcp.HTTPHandler(mcpServer))
