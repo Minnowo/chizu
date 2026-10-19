@@ -182,7 +182,9 @@ func TestWatchDatabaseInsideRootThroughSymlink(t *testing.T) {
 	dir := tempDir(t)
 	write(t, filepath.Join(dir, "a.md"), "alpha")
 	link := filepath.Join(t.TempDir(), "link")
-	require.NoError(t, os.Symlink(dir, link))
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skip("cannot create symlinks:", err) // Windows, without developer mode
+	}
 
 	f := start(t, filepath.Join(link, ".chizu.sqlite"), link)
 	require.Eventually(t, func() bool { return f.runCount() >= 1 }, wait, 10*time.Millisecond)

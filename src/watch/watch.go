@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -27,6 +28,24 @@ const (
 	// change, so a file that is written constantly still gets indexed.
 	maxDelayFactor = 10
 )
+
+var (
+	// bufferSize is the buffer each watched directory gets on Windows.
+	// Reduce the size for less memory usage.
+	bufferSize = 16 * 1024
+)
+
+func init() {
+
+	// let the user override this but it's not public api
+	envOverride := os.Getenv("WINDOWS_FSNOTIFY_BUF_SIZE")
+
+	if envOverride != "" {
+		if s, err := strconv.Atoi(envOverride); err == nil {
+			bufferSize = s
+		}
+	}
+}
 
 // rootsInterval is how often the database is checked for roots added or
 // removed by another command, when watching every root.
@@ -135,6 +154,18 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 		fire = timer.C
 	}
 
+	// schedule waits for changes to settle before the next run, but not forever.
+	schedule := func() {
+		now := time.Now()
+		if timer == nil {
+			first = now
+			timer = time.NewTimer(opts.Debounce)
+			fire = timer.C
+		} else if now.Sub(first) < opts.Debounce*maxDelayFactor {
+			timer.Reset(opts.Debounce)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -158,15 +189,7 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 				}
 			}
 
-			// Wait for changes to settle, but not forever.
-			now := time.Now()
-			if timer == nil {
-				first = now
-				timer = time.NewTimer(opts.Debounce)
-				fire = timer.C
-			} else if now.Sub(first) < opts.Debounce*maxDelayFactor {
-				timer.Reset(opts.Debounce)
-			}
+			schedule()
 
 		case <-fire:
 			timer, fire = nil, nil
@@ -187,6 +210,15 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 		case err, ok := <-fsw.Errors:
 			if !ok {
 				return nil
+			}
+			// Events were dropped, so any root may have changed.
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				w.opts.Log.Debug().Err(err).Msg("re-indexing every root")
+				for root := range w.roots {
+					dirty[root] = true
+				}
+				schedule()
+				continue
 			}
 			w.opts.Log.Warn().Err(err).Msg("file watcher error")
 
@@ -219,6 +251,14 @@ func (w *watcher) rootOf(ev fsnotify.Event) string {
 		return ""
 	}
 
+	// Windows reports a directory as written when its entries change,
+	// even for ignored directories. Those entries get their own events.
+	if ev.Op == fsnotify.Write {
+		if info, err := os.Lstat(ev.Name); err == nil && info.IsDir() {
+			return ""
+		}
+	}
+
 	if root, ok := w.dirs[ev.Name]; ok {
 		return root
 	}
@@ -245,7 +285,7 @@ func (w *watcher) sync(ctx context.Context, root string) {
 		if _, ok := w.dirs[d]; ok {
 			continue
 		}
-		if err := w.fs.Add(d); err != nil {
+		if err := w.fs.AddWith(d, fsnotify.WithBufferSize(bufferSize)); err != nil {
 			w.addFailed(d, err)
 			continue
 		}
