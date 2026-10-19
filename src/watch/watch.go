@@ -76,14 +76,9 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 		db:    db,
 		opts:  opts,
 		fs:    fsw,
-		skip:  map[string]bool{},
+		skip:  indexer.SkipSet(opts.Index.SkipPaths),
 		roots: map[string]bool{},
 		dirs:  map[string]string{},
-	}
-	for _, p := range opts.Index.SkipPaths {
-		if abs, err := filepath.Abs(p); err == nil {
-			w.skip[abs] = true
-		}
 	}
 
 	all := len(dirs) == 0

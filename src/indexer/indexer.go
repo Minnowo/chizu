@@ -123,6 +123,30 @@ type Stats struct {
 	Skipped   int    `json:"skipped"`
 }
 
+// SkipSet returns paths as they can appear under a resolved root: absolute,
+// with symlinks in their directory resolved, and with the file resolved if
+// it is a symlink itself. Resolving the directory matters for files that do
+// not exist yet, such as a database's -wal file. On Windows it also fixes
+// the case of each part, so a lowercase drive letter still matches.
+func SkipSet(paths []string) map[string]bool {
+
+	skip := map[string]bool{}
+	for _, p := range paths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			continue
+		}
+		skip[abs] = true
+		if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+			skip[filepath.Join(dir, filepath.Base(abs))] = true
+		}
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			skip[real] = true
+		}
+	}
+	return skip
+}
+
 // ResolveRoot turns dir into the absolute, symlink-free path stored as a root.
 func ResolveRoot(dir string) (string, error) {
 
@@ -166,15 +190,7 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 		return Stats{}, err
 	}
 
-	skip := map[string]bool{}
-	for _, p := range opts.SkipPaths {
-		if abs, err := filepath.Abs(p); err == nil {
-			skip[abs] = true
-			if real, err := filepath.EvalSymlinks(abs); err == nil {
-				skip[real] = true
-			}
-		}
-	}
+	skip := SkipSet(opts.SkipPaths)
 
 	stats := Stats{Root: root}
 

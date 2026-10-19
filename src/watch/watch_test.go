@@ -175,6 +175,21 @@ func TestWatchDatabaseInsideRoot(t *testing.T) {
 	require.Equal(t, map[string]bool{"a.md": true, "b.md": true}, f.paths(t, dir))
 }
 
+// The database path can name the root through a symlink (a working
+// directory under a symlink, or a Windows drive letter in another case),
+// while events come for the resolved root.
+func TestWatchDatabaseInsideRootThroughSymlink(t *testing.T) {
+	dir := tempDir(t)
+	write(t, filepath.Join(dir, "a.md"), "alpha")
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(dir, link))
+
+	f := start(t, filepath.Join(link, ".chizu.sqlite"), link)
+	require.Eventually(t, func() bool { return f.runCount() >= 1 }, wait, 10*time.Millisecond)
+	f.settle(t)
+	require.Equal(t, map[string]bool{"a.md": true}, f.paths(t, dir))
+}
+
 func TestWatchEveryRoot(t *testing.T) {
 	old := rootsInterval
 	rootsInterval = 20 * time.Millisecond
