@@ -14,6 +14,11 @@ TAGS    := netgo osusergo
 build:
 	CGO_ENABLED=1 go build -trimpath -tags '$(TAGS)' -ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN) .
 
+build-windows:
+	CC="zig cc -target x86_64-windows-gnu" \
+	CXX="zig c++ -target x86_64-windows-gnu" \
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -tags '$(TAGS)' -ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN).exe .
+
 # cgo SQLite driver (mattn/go-sqlite3). sqlite_fts5 selects it and compiles in FTS5.
 build-cgo:
 	CGO_ENABLED=1 go build -trimpath -tags '$(TAGS) sqlite_fts5 sqlite_omit_load_extension' \
