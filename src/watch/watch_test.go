@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -236,4 +237,59 @@ func TestWatchMissingDir(t *testing.T) {
 
 	err = Run(t.Context(), db, []string{filepath.Join(t.TempDir(), "nope")}, Options{})
 	require.Error(t, err)
+}
+
+// lastRun returns the latest index run.
+func (f *fixture) lastRun() run {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.runs[len(f.runs)-1]
+}
+
+func TestWatchIndexesOnlyChangedPaths(t *testing.T) {
+	dir := tempDir(t)
+	for i := range 20 {
+		write(t, filepath.Join(dir, "many", fmt.Sprintf("%d.md", i)), "same")
+	}
+	write(t, filepath.Join(dir, "a.md"), "alpha")
+
+	f := start(t, filepath.Join(t.TempDir(), "w.sqlite"), dir)
+	require.Eventually(t, func() bool { return f.runCount() >= 1 }, wait, 10*time.Millisecond)
+	f.settle(t)
+
+	// The other 20 files are not looked at.
+	write(t, filepath.Join(dir, "a.md"), "alpha two")
+	require.Eventually(t, func() bool { return f.content(t, dir, "a.md") == "alpha two" }, wait, 10*time.Millisecond)
+	f.settle(t)
+	last := f.lastRun()
+	require.NoError(t, last.err)
+	require.Equal(t, 1, last.stats.Updated)
+	require.Zero(t, last.stats.Unchanged)
+
+	// A moved directory is removed and indexed under its new name, and
+	// the new name is watched.
+	require.NoError(t, os.Rename(filepath.Join(dir, "many"), filepath.Join(dir, "moved")))
+	require.Eventually(t, func() bool {
+		p := f.paths(t, dir)
+		return !p["many/0.md"] && p["moved/0.md"]
+	}, wait, 10*time.Millisecond)
+	write(t, filepath.Join(dir, "moved", "new.md"), "new")
+	require.Eventually(t, func() bool { return f.paths(t, dir)["moved/new.md"] }, wait, 10*time.Millisecond)
+
+	// A changed ignore file applies to its directory.
+	write(t, filepath.Join(dir, "moved", ".chizuignore"), "1*.md\n")
+	require.Eventually(t, func() bool {
+		p := f.paths(t, dir)
+		return !p["moved/1.md"] && !p["moved/15.md"] && p["moved/2.md"]
+	}, wait, 10*time.Millisecond)
+
+	// An ignore file that ignores a directory stops it being watched.
+	write(t, filepath.Join(dir, "sub", "x.md"), "x")
+	require.Eventually(t, func() bool { return f.paths(t, dir)["sub/x.md"] }, wait, 10*time.Millisecond)
+	write(t, filepath.Join(dir, ".chizuignore"), "sub/\n")
+	require.Eventually(t, func() bool { return !f.paths(t, dir)["sub/x.md"] }, wait, 10*time.Millisecond)
+	runs := f.settle(t)
+	write(t, filepath.Join(dir, "sub", "y.md"), "y")
+	time.Sleep(200 * time.Millisecond)
+	require.Equal(t, runs, f.runCount())
 }

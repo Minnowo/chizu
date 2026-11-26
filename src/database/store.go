@@ -297,3 +297,27 @@ func (s *Store) FileStates(ctx context.Context, rootID int64) (map[string]FileSt
 	}
 	return states, nil
 }
+
+// FileStatesUnder returns the stored state of the file at the slash-separated
+// path rel and of every file below it, keyed by path. An empty rel means
+// every file under the root.
+func (s *Store) FileStatesUnder(ctx context.Context, rootID int64, rel string) (map[string]FileState, error) {
+	if rel == "" {
+		return s.FileStates(ctx, rootID)
+	}
+	// Paths below rel sort between "rel/" and "rel0" ('0' follows '/'),
+	// so the (root_id, path) index answers this as a range scan.
+	var rows []FileState
+	err := sqlx.SelectContext(ctx, s.q, &rows, `
+		SELECT id, path, size, mtime, hash, symbols_version FROM files
+		WHERE root_id = ? AND (path = ? OR (path >= ? AND path < ?))`,
+		rootID, rel, rel+"/", rel+"0")
+	if err != nil {
+		return nil, err
+	}
+	states := make(map[string]FileState, len(rows))
+	for _, r := range rows {
+		states[r.Path] = r
+	}
+	return states, nil
+}

@@ -91,10 +91,11 @@ language in `src/symbols/queries/`.
 
 ## Watching
 
-`chizu watch` indexes once and then waits for file changes, re-indexing the
-indexed dir they happened in after `--debounce` (default 500ms) of quiet. It
-is the same incremental index as `chizu index`, so only changed files are
-read. `serve --watch` and `mcp --watch` do the same in the background for
+`chizu watch` indexes once and then waits for file changes, re-indexing just
+the files and directories that changed after `--debounce` (default 500ms) of
+quiet, so a change costs the same however large the dir is. A changed
+`.chizuignore` re-indexes the directory it applies to, and if the OS drops
+events the whole dir is re-indexed. `serve --watch` and `mcp --watch` do the same in the background for
 every indexed dir, including dirs indexed later. Ignored directories are not
 watched.
 

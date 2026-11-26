@@ -11,11 +11,15 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -181,6 +185,76 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 	if err != nil {
 		return Stats{}, err
 	}
+	return index(ctx, db, root, []string{""}, opts)
+}
+
+// IndexPaths is Index limited to paths, absolute or relative to dir, which
+// is how a watcher keeps a large root up to date without walking all of it.
+// A directory is indexed with everything below it, a path that is gone or
+// ignored is removed from the index with everything below it, and an ignore
+// file stands for the directory it applies to. Paths outside dir are
+// skipped. The result is the same as Index if nothing else changed.
+func IndexPaths(ctx context.Context, db *database.DB, dir string, paths []string, opts Options) (Stats, error) {
+
+	root, err := ResolveRoot(dir)
+	if err != nil {
+		return Stats{}, err
+	}
+	scopes := scopesOf(root, paths)
+	if len(scopes) == 0 {
+		return Stats{Root: root}, nil
+	}
+	return index(ctx, db, root, scopes, opts)
+}
+
+// scopesOf turns paths into slash-separated paths relative to root ("" is
+// root itself), leaving out any path below another one.
+func scopesOf(root string, paths []string) []string {
+
+	set := map[string]bool{}
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if path.Base(rel) == ignore.FileName {
+			rel = path.Dir(rel)
+		}
+		if rel == "." {
+			rel = ""
+		}
+		set[rel] = true
+	}
+
+	var scopes []string
+	for rel := range set {
+		if !hasAncestorIn(rel, set) {
+			scopes = append(scopes, rel)
+		}
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
+func hasAncestorIn(rel string, set map[string]bool) bool {
+	for rel != "" {
+		rel = path.Dir(rel)
+		if rel == "." {
+			rel = ""
+		}
+		if set[rel] {
+			return true
+		}
+	}
+	return false
+}
+
+// index updates the files at and below each of scopes ("" for all of root).
+func index(ctx context.Context, db *database.DB, root string, scopes []string, opts Options) (Stats, error) {
 
 	indexMu.Lock()
 	defer indexMu.Unlock()
@@ -220,9 +294,13 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 			return err
 		}
 
-		existing, err := s.FileStates(ctx, r.ID)
-		if err != nil {
-			return err
+		existing := map[string]database.FileState{}
+		for _, scope := range scopes {
+			states, err := s.FileStatesUnder(ctx, r.ID, scope)
+			if err != nil {
+				return err
+			}
+			maps.Copy(existing, states)
 		}
 
 		ctx, cancel := context.WithCancel(ctx)
@@ -237,7 +315,7 @@ func Index(ctx context.Context, db *database.DB, dir string, opts Options) (Stat
 		var walkErr error
 		go func() {
 			defer close(jobs)
-			walkErr = walk(ctx, root, matcher, f, skip, existing, opts.Log, jobs, results)
+			walkErr = walk(ctx, root, scopes, matcher, f, skip, existing, opts.Log, jobs, results)
 		}()
 
 		var wg sync.WaitGroup
@@ -340,9 +418,26 @@ type result struct {
 	symbols []database.Symbol
 }
 
-// walk sends files needing a read to jobs. Files that are unchanged or too
-// large are decided without reading and sent straight to results.
-func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, skip map[string]bool,
+// walk sends the files at and below each of scopes needing a read to jobs.
+// Files that are unchanged or too large are decided without reading and
+// sent straight to results.
+func walk(ctx context.Context, root string, scopes []string, matcher *ignore.Matcher, f filters, skip map[string]bool,
+	existing map[string]database.FileState, log zerolog.Logger, jobs chan<- job, results chan<- result) error {
+
+	parents := newParentMatchers(root, matcher, f, log)
+	for _, scope := range scopes {
+		m, start, ok := parents.forScope(scope)
+		if !ok {
+			continue
+		}
+		if err := walkScope(ctx, root, start, m, f, skip, existing, log, jobs, results); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func walkScope(ctx context.Context, root, start string, matcher *ignore.Matcher, f filters, skip map[string]bool,
 	existing map[string]database.FileState, log zerolog.Logger, jobs chan<- job, results chan<- result) error {
 
 	send := func(r result) error {
@@ -354,9 +449,13 @@ func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, 
 		}
 	}
 
-	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
 
 		if err != nil {
+			// A changed path that is gone is removed, not an error.
+			if path == start && start != root && isNotExist(err) {
+				return nil
+			}
 			log.Warn().Err(err).Str("path", path).Msg("cannot read")
 			if d != nil && d.IsDir() {
 				return filepath.SkipDir
@@ -422,6 +521,70 @@ func walk(ctx context.Context, root string, matcher *ignore.Matcher, f filters, 
 	})
 }
 
+// parentMatchers builds the ignore rules that apply inside a directory,
+// remembering them for directories that share parents.
+type parentMatchers struct {
+	root  string
+	base  *ignore.Matcher
+	f     filters
+	log   zerolog.Logger
+	cache map[string]*ignore.Matcher
+}
+
+func newParentMatchers(root string, base *ignore.Matcher, f filters, log zerolog.Logger) *parentMatchers {
+	return &parentMatchers{root: root, base: base, f: f, log: log, cache: map[string]*ignore.Matcher{}}
+}
+
+// forScope returns the rules to walk the slash-separated path scope with,
+// and its absolute path. It reports false if a directory above scope is
+// ignored, so nothing at scope is indexed. The rules are a fresh copy, as
+// walking adds to them.
+func (p *parentMatchers) forScope(scope string) (*ignore.Matcher, string, bool) {
+	if scope == "" {
+		return p.base, p.root, true
+	}
+	parent := path.Dir(scope)
+	if parent == "." {
+		parent = ""
+	}
+	m, ok := p.dir(parent)
+	if !ok {
+		return nil, "", false
+	}
+	return m.Clone(), filepath.Join(p.root, filepath.FromSlash(scope)), true
+}
+
+// dir returns the rules that apply inside the directory rel, or false if it
+// or a directory above it is ignored.
+func (p *parentMatchers) dir(rel string) (*ignore.Matcher, bool) {
+	if rel == "" {
+		return p.base, true
+	}
+	if m, ok := p.cache[rel]; ok {
+		return m, m != nil
+	}
+	parent := path.Dir(rel)
+	if parent == "." {
+		parent = ""
+	}
+	m, ok := p.dir(parent)
+	if ok {
+		m = m.Clone()
+		ok = enterDir(p.root, rel, m, p.f, p.log) == nil
+	}
+	if !ok {
+		m = nil
+	}
+	p.cache[rel] = m
+	return m, ok
+}
+
+// isNotExist reports whether err means a path is gone, including when a
+// directory above it was replaced by a file.
+func isNotExist(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
+}
+
 // enterDir returns nil if the walk should descend into the directory rel,
 // loading its ignore file, or filepath.SkipDir if it is ignored.
 func enterDir(root, rel string, matcher *ignore.Matcher, f filters, log zerolog.Logger) error {
@@ -439,6 +602,13 @@ func enterDir(root, rel string, matcher *ignore.Matcher, f filters, log zerolog.
 // Dirs returns the absolute paths of every directory an index of the
 // indexed root dir looks in, using the filters saved for it.
 func Dirs(ctx context.Context, db *database.DB, dir string, log zerolog.Logger) ([]string, error) {
+	return DirsUnder(ctx, db, dir, "", log)
+}
+
+// DirsUnder is Dirs limited to sub, an absolute path in the root, and the
+// directories below it. It returns none if sub is not a directory or is
+// ignored.
+func DirsUnder(ctx context.Context, db *database.DB, dir, sub string, log zerolog.Logger) ([]string, error) {
 
 	r, err := LookupRoot(ctx, db, dir)
 	if err != nil {
@@ -459,9 +629,25 @@ func Dirs(ctx context.Context, db *database.DB, dir string, log zerolog.Logger) 
 		return nil, err
 	}
 
-	dirs := []string{r.Path}
-	err = filepath.WalkDir(r.Path, func(path string, d fs.DirEntry, err error) error {
+	scope := ""
+	if sub != "" {
+		scopes := scopesOf(r.Path, []string{sub})
+		if len(scopes) == 0 {
+			return nil, nil
+		}
+		scope = scopes[0]
+	}
+	matcher, start, ok := newParentMatchers(r.Path, matcher, f, log).forScope(scope)
+	if !ok {
+		return nil, nil
+	}
+
+	var dirs []string
+	err = filepath.WalkDir(start, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
+			if path == start && path != r.Path && isNotExist(err) {
+				return nil
+			}
 			if d != nil && d.IsDir() && path != r.Path {
 				return filepath.SkipDir
 			}
@@ -470,15 +656,17 @@ func Dirs(ctx context.Context, db *database.DB, dir string, log zerolog.Logger) 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if !d.IsDir() || path == r.Path {
+		if !d.IsDir() {
 			return nil
 		}
-		rel, err := filepath.Rel(r.Path, path)
-		if err != nil {
-			return err
-		}
-		if err := enterDir(r.Path, filepath.ToSlash(rel), matcher, f, log); err != nil {
-			return err
+		if path != r.Path {
+			rel, err := filepath.Rel(r.Path, path)
+			if err != nil {
+				return err
+			}
+			if err := enterDir(r.Path, filepath.ToSlash(rel), matcher, f, log); err != nil {
+				return err
+			}
 		}
 		dirs = append(dirs, path)
 		return nil

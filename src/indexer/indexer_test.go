@@ -620,3 +620,126 @@ func TestDirs(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{".", "a", filepath.Join("a", "b"), "keep"}, dirs)
 }
+
+func TestDirsUnder(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	writeTree(t, dir, map[string]string{
+		"a/b/c.md":          "x",
+		"a/node_modules/e":  "x",
+		"keep/.chizuignore": "inner/\n",
+		"keep/inner/x/f.md": "x",
+		"file.md":           "x",
+	})
+	_, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+
+	rel := func(sub string) []string {
+		t.Helper()
+		dirs, err := DirsUnder(ctx, db, dir, filepath.Join(dir, filepath.FromSlash(sub)), zerolog.Nop())
+		require.NoError(t, err)
+		out := []string{}
+		for _, d := range dirs {
+			r, err := filepath.Rel(dir, d)
+			require.NoError(t, err)
+			out = append(out, filepath.ToSlash(r))
+		}
+		return out
+	}
+
+	require.ElementsMatch(t, []string{"a", "a/b"}, rel("a"))
+	require.Empty(t, rel("a/node_modules"))
+	require.Empty(t, rel("keep/inner/x"), "below an ignored directory")
+	require.Empty(t, rel("file.md"))
+	require.Empty(t, rel("gone"))
+}
+
+func TestIndexPaths(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	p := func(rel string) string { return filepath.Join(dir, filepath.FromSlash(rel)) }
+
+	writeTree(t, dir, map[string]string{
+		"a.md":          "alpha",
+		"b.md":          "beta",
+		"sub/c.md":      "gamma",
+		"sub/d/e.md":    "epsilon",
+		"sub-x/f.md":    "phi",
+		"sub2/g.md":     "gee",
+		"other/h.md":    "aitch",
+		"other/i.md":    "eye",
+		"vendor/j.go":   "package j",
+		"keep/k.md":     "kay",
+		"keep/l.md":     "ell",
+		"keep/sub/m.md": "em",
+	})
+	_, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+
+	content := func(rel string) string {
+		t.Helper()
+		r, err := db.GetRoot(ctx, dir)
+		require.NoError(t, err)
+		f, err := db.GetFileByPath(ctx, r.ID, rel)
+		if err != nil {
+			return ""
+		}
+		return f.Content
+	}
+
+	// Only the named paths are looked at: b.md changed too, but is not named.
+	writeTree(t, dir, map[string]string{"a.md": "alpha two", "b.md": "beta two", "new.md": "new"})
+	bumpMtime(t, p("a.md"))
+	bumpMtime(t, p("b.md"))
+	stats, err := IndexPaths(ctx, db, dir, []string{p("a.md"), "new.md", p("missing.md")}, Options{})
+	require.NoError(t, err)
+	require.Equal(t, Stats{Root: dir, Added: 1, Updated: 1}, stats)
+	require.Equal(t, "alpha two", content("a.md"))
+	require.Equal(t, "beta", content("b.md"))
+	require.Equal(t, "new", content("new.md"))
+
+	// A deleted directory takes everything below it, but not siblings
+	// whose names start the same.
+	require.NoError(t, os.RemoveAll(p("sub")))
+	stats, err = IndexPaths(ctx, db, dir, []string{p("sub"), p("sub/c.md")}, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Removed)
+	require.Contains(t, indexedPaths(t, db, dir), "sub-x/f.md")
+	require.Contains(t, indexedPaths(t, db, dir), "sub2/g.md")
+
+	// A new directory is indexed with everything in it.
+	writeTree(t, dir, map[string]string{"made/n.md": "en", "made/deep/o.md": "oh"})
+	stats, err = IndexPaths(ctx, db, dir, []string{p("made")}, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Added)
+
+	// Files under ignored directories stay out.
+	writeTree(t, dir, map[string]string{"vendor/q.go": "package q", "node_modules/r.js": "r"})
+	stats, err = IndexPaths(ctx, db, dir, []string{p("vendor/q.go"), p("node_modules")}, Options{})
+	require.NoError(t, err)
+	require.Zero(t, stats.Added)
+
+	// An ignore file stands for its directory.
+	writeTree(t, dir, map[string]string{"keep/.chizuignore": "l.md\nsub/\n"})
+	stats, err = IndexPaths(ctx, db, dir, []string{p("keep/.chizuignore")}, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 2, stats.Removed)
+	require.Equal(t, 1, stats.Unchanged)
+
+	// Paths outside the root do nothing.
+	stats, err = IndexPaths(ctx, db, dir, []string{filepath.Dir(dir)}, Options{})
+	require.NoError(t, err)
+	require.Equal(t, Stats{Root: dir}, stats)
+
+	// The result is what a full index gives, apart from b.md, which was
+	// never named.
+	stats, err = Index(ctx, db, dir, Options{})
+	require.NoError(t, err)
+	require.Equal(t, 1, stats.Updated)
+	require.Zero(t, stats.Added+stats.Removed)
+}

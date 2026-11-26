@@ -1,20 +1,25 @@
 // Package watch keeps indexed directories up to date as their files change.
 //
-// There is one way to update the index: indexer.Index. File system events
-// only decide when to run it and for which root, so a watched index is
-// always what a manual re-index would have produced.
+// Changes are indexed with indexer.IndexPaths, limited to the paths file
+// system events named, so a change costs the same in a large root as in a
+// small one and the index is what a manual re-index would have produced.
+// When events were dropped, the whole root is indexed again.
 package watch
 
 import (
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"chizu/src/database"
+	"chizu/src/ignore"
 	"chizu/src/indexer"
 
 	"github.com/fsnotify/fsnotify"
@@ -111,7 +116,9 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 		}
 	}
 
-	dirty := map[string]bool{}
+	// changed holds the paths changed in each root since the last run;
+	// a nil set means the whole root.
+	changed := map[string]map[string]bool{}
 
 	var errs []error
 	for _, dir := range dirs {
@@ -127,10 +134,10 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 			continue
 		}
 		w.roots[root] = true
-		w.sync(ctx, root)
+		w.sync(ctx, root, "")
 		// Files changed while it was indexed, before it was watched, are
 		// picked up by one more (usually empty) run.
-		dirty[root] = true
+		changed[root] = nil
 	}
 	if !all && len(w.roots) == 0 {
 		return errors.Join(errs...)
@@ -149,7 +156,7 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 	var timer *time.Timer
 	var fire <-chan time.Time
 	var first time.Time
-	if len(dirty) > 0 {
+	if len(changed) > 0 {
 		timer = time.NewTimer(0)
 		fire = timer.C
 	}
@@ -179,23 +186,23 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 			if root == "" {
 				continue
 			}
-			dirty[root] = true
-
-			// Watch a new directory now, before the run that indexes it, so
-			// files written into it in the meantime are not missed.
-			if ev.Has(fsnotify.Create) {
-				if info, err := os.Lstat(ev.Name); err == nil && info.IsDir() {
-					w.sync(ctx, root)
-				}
+			if paths, ok := changed[root]; !ok {
+				changed[root] = map[string]bool{ev.Name: true}
+			} else if paths != nil {
+				paths[ev.Name] = true
 			}
-
+			w.watchChange(ctx, root, ev)
 			schedule()
 
 		case <-fire:
 			timer, fire = nil, nil
-			for root := range dirty {
-				delete(dirty, root)
+			for root, paths := range changed {
+				delete(changed, root)
 				if !w.roots[root] {
+					continue
+				}
+				if paths != nil {
+					w.indexPaths(ctx, root, paths)
 					continue
 				}
 				if err := w.index(ctx, root, false); err != nil {
@@ -204,7 +211,10 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 					}
 					continue
 				}
-				w.sync(ctx, root)
+				w.sync(ctx, root, "")
+			}
+			if ctx.Err() != nil {
+				return nil
 			}
 
 		case err, ok := <-fsw.Errors:
@@ -215,7 +225,7 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 			if errors.Is(err, fsnotify.ErrEventOverflow) {
 				w.opts.Log.Debug().Err(err).Msg("re-indexing every root")
 				for root := range w.roots {
-					dirty[root] = true
+					changed[root] = nil
 				}
 				schedule()
 				continue
@@ -228,11 +238,22 @@ func Run(ctx context.Context, db *database.DB, dirs []string, opts Options) erro
 	}
 }
 
-// index runs the indexer on one root and reports the result.
+// index runs the indexer on all of one root and reports the result.
 func (w *watcher) index(ctx context.Context, root string, initial bool) error {
-
 	start := time.Now()
 	stats, err := indexer.Index(ctx, w.db, root, w.opts.Index)
+	return w.report(ctx, root, stats, start, initial, err)
+}
+
+// indexPaths runs the indexer on the changed paths in one root and reports
+// the result.
+func (w *watcher) indexPaths(ctx context.Context, root string, paths map[string]bool) {
+	start := time.Now()
+	stats, err := indexer.IndexPaths(ctx, w.db, root, slices.Collect(maps.Keys(paths)), w.opts.Index)
+	w.report(ctx, root, stats, start, false, err)
+}
+
+func (w *watcher) report(ctx context.Context, root string, stats indexer.Stats, start time.Time, initial bool, err error) error {
 	if err != nil && ctx.Err() == nil {
 		w.opts.Log.Warn().Err(err).Str("root", root).Msg("index failed")
 	}
@@ -265,12 +286,32 @@ func (w *watcher) rootOf(ev fsnotify.Event) string {
 	return w.dirs[filepath.Dir(ev.Name)]
 }
 
-// sync watches every directory the indexer looks in under root, so new
-// directories are picked up after the index run that found them. Deleted
-// directories drop out of the OS watch by themselves.
-func (w *watcher) sync(ctx context.Context, root string) {
+// watchChange keeps the watched directories in step with a change: a new
+// directory is watched now, before the run that indexes it, so files
+// written into it in the meantime are not missed; a directory moved or
+// deleted is forgotten; and a changed ignore file can include or exclude
+// directories below it.
+func (w *watcher) watchChange(ctx context.Context, root string, ev fsnotify.Event) {
 
-	dirs, err := indexer.Dirs(ctx, w.db, root, w.opts.Log)
+	switch {
+	case filepath.Base(ev.Name) == ignore.FileName:
+		w.sync(ctx, root, filepath.Dir(ev.Name))
+	case ev.Has(fsnotify.Create):
+		if info, err := os.Lstat(ev.Name); err == nil && info.IsDir() {
+			w.sync(ctx, root, ev.Name)
+		}
+	case ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename):
+		if _, ok := w.dirs[ev.Name]; ok {
+			w.sync(ctx, root, ev.Name)
+		}
+	}
+}
+
+// sync watches every directory the indexer looks in at and below sub in
+// root ("" for all of it), and stops watching the rest.
+func (w *watcher) sync(ctx context.Context, root, sub string) {
+
+	dirs, err := indexer.DirsUnder(ctx, w.db, root, sub, w.opts.Log)
 	if ctx.Err() != nil {
 		return
 	}
@@ -292,13 +333,22 @@ func (w *watcher) sync(ctx context.Context, root string) {
 		w.dirs[d] = root
 	}
 
-	// Forget directories that were deleted or are now ignored.
+	// Forget directories that were deleted, moved or are now ignored.
 	for d, r := range w.dirs {
-		if r == root && !want[d] {
+		if r == root && !want[d] && within(d, sub) {
 			w.fs.Remove(d)
 			delete(w.dirs, d)
 		}
 	}
+}
+
+// within reports whether path is dir or below it, or dir is "".
+func within(path, dir string) bool {
+	if dir == "" || path == dir {
+		return true
+	}
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (w *watcher) addFailed(dir string, err error) {
@@ -331,7 +381,7 @@ func (w *watcher) syncRoots(ctx context.Context) {
 		current[r.Path] = true
 		if !w.roots[r.Path] {
 			w.roots[r.Path] = true
-			w.sync(ctx, r.Path)
+			w.sync(ctx, r.Path, "")
 		}
 	}
 

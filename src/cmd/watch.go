@@ -23,8 +23,9 @@ func watchCommand() *cli.Command {
 		Usage:     "index directories, then keep re-indexing them as files change (with no arguments, every indexed directory)",
 		ArgsUsage: "[dir...]",
 		Description: `Indexes each directory once, like chizu index, then waits for changes
-and re-indexes the directory they happened in. Re-indexing is incremental,
-so only changed files are read. Runs until interrupted.`,
+and re-indexes only the files and directories that changed. A changed
+.chizuignore re-indexes the directory it applies to, and if the OS drops
+events the whole directory is re-indexed. Runs until interrupted.`,
 		Flags:  append(indexFlags(), debounceFlag()),
 		Action: runWatch,
 	}

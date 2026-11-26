@@ -252,6 +252,11 @@ func (m *Matcher) Add(r *Rules) {
 	m.sets = append(m.sets, r)
 }
 
+// Clone returns a copy that rules can be added to without changing m.
+func (m *Matcher) Clone() *Matcher {
+	return &Matcher{sets: append([]*Rules(nil), m.sets...)}
+}
+
 // LoadDir loads the ignore file in root/rel, if there is one.
 // The root's own file is loaded by NewMatcher.
 func (m *Matcher) LoadDir(root, rel string) error {
