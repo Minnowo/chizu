@@ -8,15 +8,20 @@ BIN     := bin/chizu
 STATIC  ?= $(if $(filter Linux,$(shell uname -s)),-linkmode external -extldflags "-static")
 TAGS    := netgo osusergo
 
-.PHONY: build build-cgo test test-cgo test-all fmt vet clean
+.PHONY: build build-windows build-cgo test test-cgo test-all fmt vet clean
 
 # Pure Go SQLite driver (modernc.org/sqlite).
 build:
 	CGO_ENABLED=1 go build -trimpath -tags '$(TAGS)' -ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN) .
 
+# Cross-compiles with zig as the C compiler.
+ZIG       ?= zig
+ZIG_CACHE ?= $(HOME)/.cache/zig
+
 build-windows:
-	CC="zig cc -target x86_64-windows-gnu" \
-	CXX="zig c++ -target x86_64-windows-gnu" \
+	ZIG_LOCAL_CACHE_DIR="$(ZIG_CACHE)" ZIG_GLOBAL_CACHE_DIR="$(ZIG_CACHE)" \
+	CC="$(ZIG) cc -target x86_64-windows-gnu" \
+	CXX="$(ZIG) c++ -target x86_64-windows-gnu" \
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=1 go build -trimpath -tags '$(TAGS)' -ldflags '$(LDFLAGS) $(STATIC)' -o $(BIN).exe .
 
 # cgo SQLite driver (mattn/go-sqlite3). sqlite_fts5 selects it and compiles in FTS5.
